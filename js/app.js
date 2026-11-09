@@ -122,7 +122,7 @@ async function loadVideoItem(src, name) {
   const c = document.createElement('canvas'); c.width = w; c.height = h;
   const x = c.getContext('2d', { willReadFrequently: true });
   x.drawImage(v, 0, 0, w, h);
-  item.st = E.computeStats(x.getImageData(0, 0, w, h).data, w, h);
+  item.st = E.computeStats(x.getImageData(0, 0, w, h).data, w, h, { video: true });
   const t = document.createElement('canvas'); t.width = 240; t.height = Math.round(240 * item.h / item.w);
   t.getContext('2d').drawImage(v, 0, 0, t.width, t.height);
   item.thumb = t.toDataURL('image/jpeg', 0.7);
@@ -322,7 +322,8 @@ const SL = {
   ],
   adv: [
     { k: 'clarity', l: 'Clarity', min: -100, max: 100 },
-    { k: 'castAmt', l: 'Cast removal', min: 0, max: 100 },
+    { k: 'castAmt', l: 'Red comp.', min: 0, max: 100 },
+    { k: 'levels', l: 'Auto levels', min: 0, max: 100 },
     { k: 'dehazeAmt', l: 'Dehaze', min: 0, max: 100 },
     { k: 'backAmt', l: 'Backscatter', min: 0, max: 100 },
     { k: 'noiseAmt', l: 'Noise red.', min: 0, max: 100 },
@@ -475,10 +476,10 @@ function syncUI() {
 /* ---------------- quick actions & presets ---------------- */
 const QUICK = [
   { n: 'Auto Enhance', i: 'wand', f: (it) => ({ ...E.neutralParams(), ...E.autoParams(it.st) }) },
-  { n: 'Color Restore', i: 'drop', f: () => ({ cast: true, castAmt: 100, temp: 10, vibrance: 22, saturation: 12 }) },
+  { n: 'Color Restore', i: 'drop', f: () => ({ cast: true, castAmt: 100, levels: 80, vibrance: 20 }) },
   { n: 'Remove Haze', i: 'cloud', f: () => ({ dehaze: true, dehazeAmt: 65, backscatter: true, backAmt: 40, clarity: 12 }) },
   { n: 'Dehaze + Contrast', i: 'alert', f: () => ({ dehaze: true, dehazeAmt: 55, contrast: 28, clarity: 22, shadows: 10 }) },
-  { n: 'Underwater WB', i: 'pipette', f: () => ({ cast: true, castAmt: 100, temp: 0, tint: 0 }) },
+  { n: 'Underwater WB', i: 'pipette', f: () => ({ cast: true, castAmt: 100, levels: 70, temp: 0, tint: 0 }) },
   { n: 'Denoise', i: 'wave', f: () => ({ noise: true, noiseAmt: 60 }) },
 ];
 function applyPatch(patch) {
@@ -495,13 +496,13 @@ function buildQuick() {
     ul.appendChild(li);
   });
   hydrateIcons(ul);
-  $('#autoWB').onclick = () => { applyPatch({ cast: true, castAmt: 90, temp: 6, tint: 0 }); toast('Underwater white balance applied'); };
+  $('#autoWB').onclick = () => { applyPatch({ cast: true, castAmt: 100, levels: 70, temp: 0, tint: 0 }); toast('Underwater white balance applied'); };
 }
 
 const BUILTIN = [
-  { n: 'Tropical Reef', d: 'Warm, punchy shallow reef', g: 'linear-gradient(90deg,#19c3ff,#ffd21f,#ff5a8a)', p: { cast: true, castAmt: 70, temp: 22, vibrance: 40, saturation: 14, contrast: 16, dehaze: true, dehazeAmt: 35 } },
-  { n: 'Blue Water', d: 'Remove deep-blue cast', g: 'linear-gradient(90deg,#0b3d91,#19c3ff,#ffb02a)', p: { cast: true, castAmt: 90, temp: 35, tint: 4, contrast: 12, dehaze: true, dehazeAmt: 45, shadows: 18, vibrance: 28 } },
-  { n: 'Green Water', d: 'Lakes, cenotes, quarries', g: 'linear-gradient(90deg,#1c6b3a,#7be37b,#d9b3ff)', p: { cast: true, castAmt: 80, temp: 10, tint: -22, saturation: 10, dehaze: true, dehazeAmt: 50, contrast: 20 } },
+  { n: 'Tropical Reef', d: 'Warm, punchy shallow reef', g: 'linear-gradient(90deg,#19c3ff,#ffd21f,#ff5a8a)', p: { cast: true, castAmt: 70, levels: 50, temp: 12, vibrance: 40, saturation: 14, contrast: 16, dehaze: true, dehazeAmt: 35 } },
+  { n: 'Blue Water', d: 'Remove deep-blue cast', g: 'linear-gradient(90deg,#0b3d91,#19c3ff,#ffb02a)', p: { cast: true, castAmt: 90, levels: 60, temp: 10, tint: 0, contrast: 12, dehaze: true, dehazeAmt: 45, shadows: 18, vibrance: 28 } },
+  { n: 'Green Water', d: 'Lakes, cenotes, quarries', g: 'linear-gradient(90deg,#1c6b3a,#7be37b,#d9b3ff)', p: { cast: true, castAmt: 90, levels: 70, temp: 0, tint: -12, saturation: 10, dehaze: true, dehazeAmt: 50, contrast: 20 } },
   { n: 'Cave / Low Light', d: 'Lift shadows, calm noise', g: 'linear-gradient(90deg,#050a14,#3a5a8a,#ffe8b0)', p: { exposure: 0.6, shadows: 35, highlights: -20, noise: true, noiseAmt: 50, cast: true, castAmt: 60, vibrance: 25 } },
   { n: 'Wreck Cinematic', d: 'Teal shadows, warm highlights', g: 'linear-gradient(90deg,#0a4a5a,#6a7a7a,#ff9a3a)', p: { contrast: 28, saturation: -8, temp: -6, cast: true, castAmt: 60, dehaze: true, dehazeAmt: 40, wheels: { shadows: { x: 0, y: 0.55, l: 0 }, mid: { x: 0, y: 0, l: 0 }, high: { x: 0.3, y: -0.52, l: 0 } } } },
   { n: 'Macro Pop', d: 'Vivid colour, extra clarity', g: 'linear-gradient(90deg,#ff3b3b,#ffd23b,#3bd0ff)', p: { vibrance: 45, saturation: 22, clarity: 25, contrast: 20, shadows: 12, cast: true, castAmt: 60 } },

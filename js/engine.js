@@ -18,7 +18,7 @@ const Engine = (() => {
     const hsl = {};
     BANDS.forEach((b) => (hsl[b.id] = { h: 0, s: 0, l: 0 }));
     return {
-      temp: 0, tint: 0, exposure: 0, contrast: 0, highlights: 0, shadows: 0, vibrance: 0, saturation: 0, clarity: 0,
+      temp: 0, tint: 0, exposure: 0, contrast: 0, highlights: 0, shadows: 0, vibrance: 0, saturation: 0, clarity: 0, levels: 0,
       cast: false, castAmt: 70, dehaze: false, dehazeAmt: 40, backscatter: false, backAmt: 35, noise: false, noiseAmt: 40,
       curves: { rgb: [[0, 0], [1, 1]], r: [[0, 0], [1, 1]], g: [[0, 0], [1, 1]], b: [[0, 0], [1, 1]] },
       wheels: { shadows: { x: 0, y: 0, l: 0 }, mid: { x: 0, y: 0, l: 0 }, high: { x: 0, y: 0, l: 0 } },
@@ -70,21 +70,80 @@ const Engine = (() => {
 
   const isIdentity = (pts) => pts.length === 2 && pts[0][0] === 0 && pts[0][1] === 0 && pts[1][0] === 1 && pts[1][1] === 1;
 
-  /* ---------- statistics ---------- */
-  function computeStats(data, w, h) {
-    let r = 0, g = 0, b = 0, mn = 0, c = 0;
-    const hist = new Uint32Array(256);
+  /* ---------- image helpers ---------- */
+  function boxBlur(src, w, h, r) {
+    const out = new Float32Array(w * h), tmp = new Float32Array(w * h), P = new Float32Array(Math.max(w, h) + 1);
+    for (let y = 0; y < h; y++) {
+      const o = y * w; P[0] = 0;
+      for (let x = 0; x < w; x++) P[x + 1] = P[x] + src[o + x];
+      for (let x = 0; x < w; x++) { const a = x - r < 0 ? 0 : x - r, b = x + r > w - 1 ? w - 1 : x + r; tmp[o + x] = (P[b + 1] - P[a]) / (b - a + 1); }
+    }
+    for (let x = 0; x < w; x++) {
+      P[0] = 0;
+      for (let y = 0; y < h; y++) P[y + 1] = P[y] + tmp[y * w + x];
+      for (let y = 0; y < h; y++) { const a = y - r < 0 ? 0 : y - r, b = y + r > h - 1 ? h - 1 : y + r; out[y * w + x] = (P[b + 1] - P[a]) / (b - a + 1); }
+    }
+    return out;
+  }
+  function minFilter(src, w, h, r) {
+    const tmp = new Float32Array(w * h), out = new Float32Array(w * h);
+    for (let y = 0; y < h; y++) {
+      const o = y * w;
+      for (let x = 0; x < w; x++) { let m = 9; const b = Math.min(w - 1, x + r); for (let k = Math.max(0, x - r); k <= b; k++) if (src[o + k] < m) m = src[o + k]; tmp[o + x] = m; }
+    }
+    for (let x = 0; x < w; x++) {
+      for (let y = 0; y < h; y++) { let m = 9; const b = Math.min(h - 1, y + r); for (let k = Math.max(0, y - r); k <= b; k++) { const v = tmp[k * w + x]; if (v < m) m = v; } out[y * w + x] = m; }
+    }
+    return out;
+  }
+  function guidedFilter(I, p, w, h, r, eps) {
+    const n = w * h, Ip = new Float32Array(n), II = new Float32Array(n);
+    for (let i = 0; i < n; i++) { Ip[i] = I[i] * p[i]; II[i] = I[i] * I[i]; }
+    const mI = boxBlur(I, w, h, r), mp = boxBlur(p, w, h, r), mIp = boxBlur(Ip, w, h, r), mII = boxBlur(II, w, h, r);
+    const a = new Float32Array(n), b = new Float32Array(n);
+    for (let i = 0; i < n; i++) { const v = mII[i] - mI[i] * mI[i], c = mIp[i] - mI[i] * mp[i]; a[i] = c / (v + eps); b[i] = mp[i] - a[i] * mI[i]; }
+    const ma = boxBlur(a, w, h, r), mb = boxBlur(b, w, h, r), q = new Float32Array(n);
+    for (let i = 0; i < n; i++) q[i] = ma[i] * I[i] + mb[i];
+    return q;
+  }
+
+  /* ---------- statistics (+ underwater haze model) ---------- */
+  function computeStats(data, w, h, opts) {
+    opts = opts || {};
+    const n = w * h, hist = new Uint32Array(256);
+    let r = 0, g = 0, b = 0, mn = 0;
     for (let i = 0; i < data.length; i += 4) {
       const R = data[i], G = data[i + 1], B = data[i + 2];
       r += R; g += G; b += B; mn += Math.min(R, G, B);
       hist[(0.2126 * R + 0.7152 * G + 0.0722 * B) | 0]++;
-      c++;
     }
-    const cut = (q) => { let a = 0; const t = c * q; for (let i = 0; i < 256; i++) { a += hist[i]; if (a >= t) return i / 255; } return 1; };
-    return {
-      r: Math.max(r / c / 255, 0.004), g: Math.max(g / c / 255, 0.004), b: Math.max(b / c / 255, 0.004),
-      minMean: mn / c / 255, hist, p1: cut(0.01), p99: cut(0.99), p50: cut(0.5),
+    const cut = (q) => { let a = 0; const t = n * q; for (let i = 0; i < 256; i++) { a += hist[i]; if (a >= t) return i / 255; } return 1; };
+    const st = {
+      r: Math.max(r / n / 255, 0.004), g: Math.max(g / n / 255, 0.004), b: Math.max(b / n / 255, 0.004),
+      minMean: mn / n / 255, hist, p1: cut(0.01), p99: cut(0.99), p50: cut(0.5), A: null, trans: null, tw: w, th: h,
     };
+    if (opts.video || n < 64) return st;
+
+    // Underwater dark channel prior: only G and B (red is already absorbed), local minimum, refined with a guided filter
+    const gb = new Float32Array(n), Y = new Float32Array(n);
+    for (let i = 0, j = 0; i < n; i++, j += 4) {
+      gb[i] = Math.min(data[j + 1], data[j + 2]) / 255;
+      Y[i] = (0.2126 * data[j] + 0.7152 * data[j + 1] + 0.0722 * data[j + 2]) / 255;
+    }
+    const big = Math.max(w, h);
+    const dark = minFilter(gb, w, h, Math.max(2, Math.round(big / 200)));
+    const dh = new Uint32Array(256);
+    for (let i = 0; i < n; i++) dh[Math.min(255, (dark[i] * 255) | 0)]++;
+    let acc = 0, thr = 255; for (let v = 255; v >= 0; v--) { acc += dh[v]; if (acc >= n * 0.001) { thr = v; break; } }
+    let ar = 0, ag = 0, ab = 0, cn = 0;
+    for (let i = 0, j = 0; i < n; i++, j += 4) if (dark[i] * 255 >= thr) { ar += data[j]; ag += data[j + 1]; ab += data[j + 2]; cn++; }
+    const A = [clamp(ar / cn / 255, 0.12, 1), clamp(ag / cn / 255, 0.2, 1), clamp(ab / cn / 255, 0.2, 1)];
+    const Amin = Math.min(A[1], A[2]), t0 = new Float32Array(n);
+    for (let i = 0; i < n; i++) t0[i] = 1 - 0.95 * Math.min(1, dark[i] / Amin);
+    const t = guidedFilter(Y, t0, w, h, Math.max(4, Math.round(big / 80)), 1e-3);
+    for (let i = 0; i < n; i++) t[i] = clamp(t[i], 0.05, 1);
+    st.A = A; st.trans = t;
+    return st;
   }
 
   /* ---------- denoise (3x3 mean blend) ---------- */
@@ -111,134 +170,156 @@ const Engine = (() => {
     return out;
   }
 
-  /* ---------- the pipeline ---------- */
+  /* ---------- the pipeline ----------
+     1 red/blue compensation (Ancuti-style, protects already-red pixels)  2 temperature / tint / exposure
+     3 underwater dark-channel dehaze (per-pixel transmission)           4 per-channel percentile stretch
+     5 backscatter, contrast, shadows/highlights, vibrance, curves, wheels, HSL   6 local-contrast clarity */
   function process(src, dst, w, h, p, st) {
     let input = src;
     if (p.noise && p.noiseAmt > 0) input = denoise(src, w, h, clamp(p.noiseAmt / 100, 0, 1));
 
-    // multiplicative gains: underwater cast, temperature, tint, exposure
-    let gr = 1, gg = 1, gb = 1;
-    if (p.cast) {
-      const a = p.castAmt / 100, avg = (st.r + st.g + st.b) / 3;
-      gr = 1 + (clamp(avg / st.r, 0.6, 2.6) - 1) * a;
-      gg = 1 + (clamp(avg / st.g, 0.6, 2.6) - 1) * a;
-      gb = 1 + (clamp(avg / st.b, 0.6, 2.6) - 1) * a;
-    }
+    const a = p.cast ? clamp(p.castAmt / 100, 0, 1.2) : 0;
+    const kR = Math.max(0, st.g - st.r) * a, kB = Math.max(0, st.g - st.b) * a;
     const ex = Math.pow(2, p.exposure);
-    gr *= (1 + p.temp * 0.004) * ex; gb *= (1 - p.temp * 0.004) * ex; gg *= (1 + p.tint * 0.003) * ex;
+    const gr = (1 + p.temp * 0.004) * ex, gb = (1 - p.temp * 0.004) * ex, gg = (1 + p.tint * 0.003) * ex;
+    const dz = p.dehaze ? clamp(p.dehazeAmt / 100, 0, 1) : 0;
+    const tr = st.trans, tw = st.tw, th = st.th, sx = tw / w, sy = th / h;
 
-    const dz = p.dehaze ? (p.dehazeAmt / 100) * 0.8 : 0;
-    const bk = p.backscatter ? p.backAmt / 100 : 0;
-    const cl = p.clarity / 100 * 0.6;
-    const ct = 1 + p.contrast / 100;
-    const hi = p.highlights / 100 * 0.4, sh = p.shadows / 100 * 0.4;
-    const vib = p.vibrance / 100, sat = 1 + p.saturation / 100;
+    let qr = 0, qg = 0, qb = 0;
+    const stage1 = (r, g, b) => {
+      r += kR * (1 - r) * g; b += kB * (1 - b) * g;
+      r *= gr; g *= gg; b *= gb;
+      if (r > 0.85) r = 0.85 + 0.15 * Math.tanh((r - 0.85) / 0.15);
+      if (g > 0.85) g = 0.85 + 0.15 * Math.tanh((g - 0.85) / 0.15);
+      if (b > 0.85) b = 0.85 + 0.15 * Math.tanh((b - 0.85) / 0.15);
+      qr = r; qg = g; qb = b;
+    };
+    const Araw = st.A || [0.3, 0.55, 0.75];
+    stage1(Araw[0], Araw[1], Araw[2]);
+    const A1r = qr, A1g = qg, A1b = qb, A1min = Math.max(0.05, Math.min(A1g, A1b));
+    const dehaze = (x, y) => {
+      let t = tr ? tr[((y * sy) | 0) * tw + ((x * sx) | 0)] : 1 - 0.95 * Math.min(1, Math.min(qg, qb) / A1min);
+      t = 1 - dz * (1 - t); if (t < 0.3) t = 0.3;
+      qr = (qr - A1r) / t + A1r; qg = (qg - A1g) / t + A1g; qb = (qb - A1b) / t + A1b;
+    };
+
+    // per-channel percentile stretch, measured on a sparse sample of the corrected image
+    const L = clamp((p.levels || 0) / 100, 0, 1);
+    const lo = [0, 0, 0], sc = [1, 1, 1];
+    if (L > 0) {
+      const H = [new Uint32Array(256), new Uint32Array(256), new Uint32Array(256)], step = Math.max(2, Math.round(Math.sqrt(w * h / 40000)));
+      let cnt = 0;
+      for (let y = 0; y < h; y += step) for (let x = 0; x < w; x += step) {
+        const i = (y * w + x) * 4;
+        stage1(input[i] / 255, input[i + 1] / 255, input[i + 2] / 255);
+        if (dz > 0) dehaze(x, y);
+        H[0][clamp((qr * 255) | 0, 0, 255)]++; H[1][clamp((qg * 255) | 0, 0, 255)]++; H[2][clamp((qb * 255) | 0, 0, 255)]++; cnt++;
+      }
+      const minRange = [0.55, 0.45, 0.45];
+      for (let c = 0; c < 3; c++) {
+        let acc = 0, l = 0, hgh = 255, gotL = false;
+        for (let v = 0; v < 256; v++) { acc += H[c][v]; if (!gotL && acc >= cnt * 0.005) { l = v; gotL = true; } if (acc >= cnt * 0.995) { hgh = v; break; } }
+        lo[c] = Math.min(l / 255, 0.3);
+        sc[c] = 1 / Math.max(hgh / 255 - lo[c], minRange[c]);
+      }
+    }
 
     const lm = curveLUT(p.curves.rgb), lr = curveLUT(p.curves.r), lg = curveLUT(p.curves.g), lb = curveLUT(p.curves.b);
     const useCurves = !(isIdentity(p.curves.rgb) && isIdentity(p.curves.r) && isIdentity(p.curves.g) && isIdentity(p.curves.b));
     const cR = new Float32Array(256), cG = new Float32Array(256), cB = new Float32Array(256);
-    for (let i = 0; i < 256; i++) {
-      const m = lm[i], j = (m * 255 + 0.5) | 0;
-      cR[i] = lr[j]; cG[i] = lg[j]; cB[i] = lb[j];
-    }
+    for (let i = 0; i < 256; i++) { const j = (lm[i] * 255 + 0.5) | 0; cR[i] = lr[j]; cG[i] = lg[j]; cB[i] = lb[j]; }
+    const bk = p.backscatter ? p.backAmt / 100 : 0;
+    const ct = 1 + p.contrast / 100;
+    const hi = p.highlights / 100 * 0.4, sh = p.shadows / 100 * 0.4;
+    const vib = p.vibrance / 100, sat = 1 + p.saturation / 100;
 
-    // colour wheels
     const wh = ['shadows', 'mid', 'high'].map((k) => {
-      const o = p.wheels[k], mag = Math.min(1, Math.hypot(o.x, o.y)), ang = Math.atan2(o.x, -o.y);
-      return { r: Math.cos(ang) * mag * 0.16 + o.l / 100 * 0.25, g: Math.cos(ang - 2.0944) * mag * 0.16 + o.l / 100 * 0.25, b: Math.cos(ang - 4.18879) * mag * 0.16 + o.l / 100 * 0.25, on: mag > 0.001 || o.l !== 0 };
+      const o = p.wheels[k], mag = Math.min(1, Math.hypot(o.x, o.y)), ang = Math.atan2(o.x, -o.y), l = o.l / 100 * 0.25;
+      return { r: Math.cos(ang) * mag * 0.16 + l, g: Math.cos(ang - 2.0944) * mag * 0.16 + l, b: Math.cos(ang - 4.18879) * mag * 0.16 + l, on: mag > 0.001 || o.l !== 0 };
     });
     const wheelsOn = wh.some((o) => o.on);
-
-    // HSL bands
     const bands = BANDS.map((b) => ({ c: b.c, ...p.hsl[b.id] })).filter((b) => b.h || b.s || b.l);
     const hslOn = bands.length > 0;
 
     const out = dst;
-    const n = w * h * 4;
-    for (let i = 0; i < n; i += 4) {
-      let r = input[i] / 255 * gr, g = input[i + 1] / 255 * gg, b = input[i + 2] / 255 * gb;
-      if (r > 0.85) r = 0.85 + 0.15 * Math.tanh((r - 0.85) / 0.15);
-      if (g > 0.85) g = 0.85 + 0.15 * Math.tanh((g - 0.85) / 0.15);
-      if (b > 0.85) b = 0.85 + 0.15 * Math.tanh((b - 0.85) / 0.15);
-
-      if (dz > 0) {
-        const v = Math.min(r, g, b) * dz, iv = 1 / (1 - v);
-        r = (r - v) * iv; g = (g - v) * iv; b = (b - v) * iv;
-      }
-      let Y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-      if (bk > 0) {
-        const s = Math.max(r, g, b) - Math.min(r, g, b);
-        const t = clamp((Y - 0.55) / 0.35, 0, 1);
-        const wgt = clamp(1 - s * 3, 0, 1) * t * t * (3 - 2 * t) * bk * 0.35;
-        r *= 1 - wgt; g *= 1 - wgt; b *= 1 - wgt;
-      }
-      if (cl) {
-        r = clamp(r, 0, 1); g = clamp(g, 0, 1); b = clamp(b, 0, 1);
-        r += cl * (r * r * (3 - 2 * r) - r); g += cl * (g * g * (3 - 2 * g) - g); b += cl * (b * b * (3 - 2 * b) - b);
-      }
-      if (ct !== 1) { r = (r - 0.5) * ct + 0.5; g = (g - 0.5) * ct + 0.5; b = (b - 0.5) * ct + 0.5; }
-      Y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-      if (hi || sh) {
-        const yc = clamp(Y, 0, 1);
-        const add = hi * yc * yc + sh * (1 - yc) * (1 - yc);
-        r += add; g += add; b += add;
-      }
-      if (vib || sat !== 1) {
-        r = clamp(r, 0, 1); g = clamp(g, 0, 1); b = clamp(b, 0, 1);
-        const mx = Math.max(r, g, b), mi = Math.min(r, g, b);
-        const f = sat * (1 + vib * (1 - (mx - mi)));
-        Y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-        r = Y + (r - Y) * f; g = Y + (g - Y) * f; b = Y + (b - Y) * f;
-      }
-      r = clamp(r, 0, 1); g = clamp(g, 0, 1); b = clamp(b, 0, 1);
-      if (useCurves) { r = cR[(r * 255 + 0.5) | 0]; g = cG[(g * 255 + 0.5) | 0]; b = cB[(b * 255 + 0.5) | 0]; }
-
-      if (wheelsOn) {
-        const y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-        const ws = clamp(1 - y * 2, 0, 1), wm = 1 - Math.abs(2 * y - 1), wi = clamp(2 * y - 1, 0, 1);
-        r += wh[0].r * ws + wh[1].r * wm + wh[2].r * wi;
-        g += wh[0].g * ws + wh[1].g * wm + wh[2].g * wi;
-        b += wh[0].b * ws + wh[1].b * wm + wh[2].b * wi;
-        r = clamp(r, 0, 1); g = clamp(g, 0, 1); b = clamp(b, 0, 1);
-      }
-
-      if (hslOn) {
-        const mx = Math.max(r, g, b), mi = Math.min(r, g, b), d = mx - mi;
-        if (d > 1e-5) {
-          let l = (mx + mi) / 2, s = l > 0.5 ? d / (2 - mx - mi) : d / (mx + mi), hh;
-          if (mx === r) hh = ((g - b) / d + (g < b ? 6 : 0)) * 60;
-          else if (mx === g) hh = ((b - r) / d + 2) * 60;
-          else hh = ((r - g) / d + 4) * 60;
-          let dh = 0, ds = 0, dl = 0;
-          for (let k = 0; k < bands.length; k++) {
-            const bd = bands[k], dist = Math.abs(((hh - bd.c + 540) % 360) - 180);
-            if (dist < 45) {
-              const wt = (0.5 + 0.5 * Math.cos(Math.PI * dist / 45)) * Math.min(1, s * 2.5);
-              dh += bd.h * 0.3 * wt; ds += bd.s / 100 * wt; dl += bd.l / 100 * 0.25 * wt;
-            }
-          }
-          hh = (hh + dh + 360) % 360; s = clamp(s * (1 + ds), 0, 1); l = clamp(l + dl, 0, 1);
-          const q = l < 0.5 ? l * (1 + s) : l + s - l * s, pp = 2 * l - q, hk = hh / 360;
-          const f = (t) => { t = (t + 1) % 1; return t < 1 / 6 ? pp + (q - pp) * 6 * t : t < 0.5 ? q : t < 2 / 3 ? pp + (q - pp) * (2 / 3 - t) * 6 : pp; };
-          r = f(hk + 1 / 3); g = f(hk); b = f(hk - 1 / 3);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 4;
+        stage1(input[i] / 255, input[i + 1] / 255, input[i + 2] / 255);
+        if (dz > 0) dehaze(x, y);
+        let r = qr, g = qg, b = qb;
+        if (L > 0) {
+          r += ((r - lo[0]) * sc[0] - r) * L; g += ((g - lo[1]) * sc[1] - g) * L; b += ((b - lo[2]) * sc[2] - b) * L;
         }
+        r = r < 0 ? 0 : r > 1 ? 1 : r; g = g < 0 ? 0 : g > 1 ? 1 : g; b = b < 0 ? 0 : b > 1 ? 1 : b;
+
+        let Y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        if (bk > 0) {
+          const s = Math.max(r, g, b) - Math.min(r, g, b), t = clamp((Y - 0.55) / 0.35, 0, 1);
+          const wgt = clamp(1 - s * 3, 0, 1) * t * t * (3 - 2 * t) * bk * 0.35;
+          r *= 1 - wgt; g *= 1 - wgt; b *= 1 - wgt;
+        }
+        if (ct !== 1) { r = (r - 0.5) * ct + 0.5; g = (g - 0.5) * ct + 0.5; b = (b - 0.5) * ct + 0.5; }
+        if (hi || sh) {
+          Y = clamp(0.2126 * r + 0.7152 * g + 0.0722 * b, 0, 1);
+          const add = hi * Y * Y + sh * (1 - Y) * (1 - Y);
+          r += add; g += add; b += add;
+        }
+        if (vib || sat !== 1) {
+          r = clamp(r, 0, 1); g = clamp(g, 0, 1); b = clamp(b, 0, 1);
+          const mx = Math.max(r, g, b), mi = Math.min(r, g, b), f = sat * (1 + vib * (1 - (mx - mi)));
+          Y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+          r = Y + (r - Y) * f; g = Y + (g - Y) * f; b = Y + (b - Y) * f;
+        }
+        r = clamp(r, 0, 1); g = clamp(g, 0, 1); b = clamp(b, 0, 1);
+        if (useCurves) { r = cR[(r * 255 + 0.5) | 0]; g = cG[(g * 255 + 0.5) | 0]; b = cB[(b * 255 + 0.5) | 0]; }
+
+        if (wheelsOn) {
+          const yy = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+          const ws = clamp(1 - yy * 2, 0, 1), wm = 1 - Math.abs(2 * yy - 1), wi = clamp(2 * yy - 1, 0, 1);
+          r += wh[0].r * ws + wh[1].r * wm + wh[2].r * wi; g += wh[0].g * ws + wh[1].g * wm + wh[2].g * wi; b += wh[0].b * ws + wh[1].b * wm + wh[2].b * wi;
+          r = clamp(r, 0, 1); g = clamp(g, 0, 1); b = clamp(b, 0, 1);
+        }
+        if (hslOn) {
+          const mx = Math.max(r, g, b), mi = Math.min(r, g, b), d = mx - mi;
+          if (d > 1e-5) {
+            let l = (mx + mi) / 2, s = l > 0.5 ? d / (2 - mx - mi) : d / (mx + mi), hh;
+            if (mx === r) hh = ((g - b) / d + (g < b ? 6 : 0)) * 60; else if (mx === g) hh = ((b - r) / d + 2) * 60; else hh = ((r - g) / d + 4) * 60;
+            let dh = 0, ds = 0, dl = 0;
+            for (let k = 0; k < bands.length; k++) {
+              const bd = bands[k], dist = Math.abs(((hh - bd.c + 540) % 360) - 180);
+              if (dist < 45) { const wt = (0.5 + 0.5 * Math.cos(Math.PI * dist / 45)) * Math.min(1, s * 2.5); dh += bd.h * 0.3 * wt; ds += bd.s / 100 * wt; dl += bd.l / 100 * 0.25 * wt; }
+            }
+            hh = (hh + dh + 360) % 360; s = clamp(s * (1 + ds), 0, 1); l = clamp(l + dl, 0, 1);
+            const q = l < 0.5 ? l * (1 + s) : l + s - l * s, pp = 2 * l - q, hk = hh / 360;
+            const f = (t) => { t = (t + 1) % 1; return t < 1 / 6 ? pp + (q - pp) * 6 * t : t < 0.5 ? q : t < 2 / 3 ? pp + (q - pp) * (2 / 3 - t) * 6 : pp; };
+            r = f(hk + 1 / 3); g = f(hk); b = f(hk - 1 / 3);
+          }
+        }
+        out[i] = r * 255 + 0.5; out[i + 1] = g * 255 + 0.5; out[i + 2] = b * 255 + 0.5; out[i + 3] = 255;
       }
-      out[i] = r * 255 + 0.5; out[i + 1] = g * 255 + 0.5; out[i + 2] = b * 255 + 0.5; out[i + 3] = 255;
+    }
+
+    // clarity = real local contrast (detail relative to a wide blur), not a global curve
+    if (p.clarity) {
+      const n = w * h, Yp = new Float32Array(n);
+      for (let i = 0, j = 0; i < n; i++, j += 4) Yp[i] = (0.2126 * out[j] + 0.7152 * out[j + 1] + 0.0722 * out[j + 2]) / 255;
+      const rad = Math.max(6, Math.round(Math.max(w, h) / 40)), B = boxBlur(boxBlur(Yp, w, h, rad), w, h, rad), k = p.clarity / 100 * 1.3;
+      for (let i = 0, j = 0; i < n; i++, j += 4) {
+        const gain = clamp(1 + k * (Yp[i] - B[i]) / (Yp[i] + 0.08), 0.6, 1.6);
+        out[j] *= gain; out[j + 1] *= gain; out[j + 2] *= gain;
+      }
     }
   }
 
-  /* ---------- auto routines ---------- */
+  /* ---------- auto routine ---------- */
   function autoParams(st) {
-    const avg = (st.r + st.g + st.b) / 3;
-    const afterY = 0.2126 * Math.min(3.2, avg / st.r) * st.r + 0.7152 * Math.min(3.2, avg / st.g) * st.g + 0.0722 * Math.min(3.2, avg / st.b) * st.b;
-    const spread = st.p99 - st.p1;
     return {
-      cast: true, castAmt: 70,
-      exposure: +clamp(Math.log2(0.42 / Math.max(afterY, 0.02)), -1, 1).toFixed(2),
-      contrast: Math.round(clamp((0.82 - spread) * 90, 0, 38)),
-      vibrance: 28, saturation: 8, shadows: 16, highlights: -8,
-      dehaze: true, dehazeAmt: Math.round(clamp(st.minMean * 130, 12, 60)),
-      backscatter: true, backAmt: 30, temp: 6, tint: 0,
+      cast: true, castAmt: 100, levels: 75,
+      dehaze: true, dehazeAmt: Math.round(clamp(st.minMean * 180, 22, 55)),
+      backscatter: true, backAmt: 25,
+      exposure: +clamp(Math.log2(0.4 / Math.max(st.p50, 0.05)) * 0.5, -0.4, 0.8).toFixed(2),
+      contrast: 6, clarity: 18, vibrance: 18, saturation: 0, shadows: 8, highlights: -6, temp: 0, tint: 0,
     };
   }
 
