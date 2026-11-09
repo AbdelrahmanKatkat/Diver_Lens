@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dive ColorLab</title>
+<meta name="description" content="Enhance, colour-correct and restore underwater photos and videos. Everything runs locally in your browser: open files from your disk, fix them, export them back.">
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<script>
+  try {
+    var t = localStorage.getItem('dcl.theme');
+    if (!t) t = window.matchMedia && matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', t);
+  } catch (e) {}
+</script>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div class="bg" aria-hidden="true"></div>
+
+<header class="top">
+  <a class="brand" href="#" data-nav="home" aria-label="Dive ColorLab home">
+    <img src="assets/logo.svg" alt="" width="64" height="48">
+    <span class="brand-t"><b>Dive Color<i>Lab</i></b><small>Enhance • Color Correct • Restore Underwater</small></span>
+  </a>
+  <nav class="tabs" id="mainNav" aria-label="Main">
+    <button class="tab on" data-nav="home"><svg class="i" data-i="home"></svg><span>Home</span></button>
+    <button class="tab" data-nav="edit"><svg class="i" data-i="edit"></svg><span>Edit</span></button>
+    <button class="tab" data-nav="batch"><svg class="i" data-i="layers"></svg><span>Batch</span></button>
+    <button class="tab" data-nav="presets"><svg class="i" data-i="presets"></svg><span>Presets</span></button>
+    <button class="tab" data-nav="compare"><svg class="i" data-i="compare"></svg><span>Compare</span></button>
+    <button class="tab" data-nav="export"><svg class="i" data-i="export"></svg><span>Export</span></button>
+  </nav>
+  <div class="top-actions">
+    <button class="round" id="themeBtn" title="Switch dark / light theme" aria-label="Switch dark or light theme"><svg class="i" data-i="sun"></svg></button>
+    <button class="round" id="helpBtn" title="About &amp; photo credits" aria-label="About"><svg class="i" data-i="help"></svg></button>
+  </div>
+</header>
+
+<ol class="steps" id="steps" aria-label="Workflow">
+  <li><button data-step="1"><b>1</b> Import <small>open local files</small></button></li>
+  <li><button data-step="2"><b>2</b> Correct <small>fix the colour</small></button></li>
+  <li><button data-step="3"><b>3</b> Compare <small>before / after</small></button></li>
+  <li><button data-step="4"><b>4</b> Export <small>save back to disk</small></button></li>
+</ol>
+
+<!-- ============ WORKSPACE ============ -->
+<main class="ws" id="view-ws">
+  <aside class="side glass neon">
+    <button class="import" id="importBtn"><svg class="i" data-i="folder"></svg> Import Media</button>
+    <p class="privacy"><svg class="i" data-i="lock"></svg> Files open locally. Nothing is uploaded.</p>
+
+    <section class="grp">
+      <h3><svg class="i" data-i="image"></svg> My Media <svg class="i chev" data-i="down"></svg></h3>
+      <ul class="media-list">
+        <li><button data-filter="video"><svg class="i" data-i="folder"></svg> Videos <em id="cVideos">0</em></button></li>
+        <li><button data-filter="image"><svg class="i" data-i="folder"></svg> Photos <em id="cPhotos">0</em></button></li>
+        <li><button id="projectsBtn"><svg class="i" data-i="folder"></svg> Projects <em id="cProjects">0</em></button></li>
+        <li><button data-nav="presets"><svg class="i" data-i="presets"></svg> Presets <em id="cPresets">0</em></button></li>
+      </ul>
+    </section>
+
+    <section class="grp">
+      <h3><svg class="i" data-i="bolt"></svg> Quick Actions <svg class="i chev" data-i="down"></svg></h3>
+      <ul class="quick" id="quick"></ul>
+    </section>
+  </aside>
+
+  <section class="center">
+    <div class="stage glass neon" id="stage">
+      <div class="cmp" id="cmp">
+        <canvas id="cBefore"></canvas>
+        <canvas id="cAfter"></canvas>
+        <span class="tag tag-b">Before</span>
+        <span class="tag tag-a">After</span>
+        <div class="handle" id="handle" role="slider" tabindex="0" aria-label="Before / after divider" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50"><span><svg class="i" data-i="lr"></svg></span></div>
+      </div>
+      <div class="busy" id="busy" hidden><i></i><span id="busyTxt">Working…</span></div>
+      <div class="empty" id="empty" hidden>
+        <svg class="i big" data-i="folder"></svg>
+        <p><b>Drop photos or videos here</b><br>or use <em>Import Media</em>. Files stay on your device.</p>
+      </div>
+    </div>
+
+    <div class="playbar glass" id="playbar">
+      <button class="pbtn" id="playBtn" aria-label="Play / pause"><svg class="i" data-i="play"></svg></button>
+      <span class="time" id="timeTxt">Photo</span>
+      <input type="range" id="seek" min="0" max="1000" value="0" aria-label="Seek">
+      <button class="ibtn" id="muteBtn" aria-label="Mute"><svg class="i" data-i="volume"></svg></button>
+      <button class="ibtn" id="fsBtn" aria-label="Fullscreen"><svg class="i" data-i="full"></svg></button>
+      <button class="ibtn" id="snapBtn" aria-label="Save current frame as PNG" title="Save current frame (corrected) as PNG"><svg class="i" data-i="camera"></svg></button>
+    </div>
+
+    <div class="film glass" id="filmWrap">
+      <button class="fnav" id="filmPlay" aria-label="Previous"><svg class="i" data-i="left"></svg></button>
+      <div class="film-strip" id="film"></div>
+      <button class="fnav" id="filmNext" aria-label="Next"><svg class="i" data-i="right"></svg></button>
+    </div>
+
+    <div class="panels">
+      <section class="panel glass neon">
+        <h3><svg class="i" data-i="curve"></svg> Curves <svg class="i chev" data-i="down"></svg></h3>
+        <div class="seg" id="curveTabs">
+          <button class="on" data-ch="rgb">RGB</button><button data-ch="r">R</button><button data-ch="g">G</button><button data-ch="b">B</button>
+        </div>
+        <canvas id="curveCv" class="curve-cv" aria-label="Tone curve editor. Click to add points, drag to move, double-click a point to remove."></canvas>
+      </section>
+      <section class="panel glass neon">
+        <h3><svg class="i" data-i="wheel"></svg> Color Wheels <svg class="i chev" data-i="down"></svg></h3>
+        <div class="wheels" id="wheels"></div>
+      </section>
+      <section class="panel glass neon">
+        <h3><svg class="i" data-i="hsl"></svg> HSL <svg class="i chev" data-i="down"></svg></h3>
+        <div class="dots" id="hslDots"></div>
+        <div id="hslSliders"></div>
+      </section>
+    </div>
+  </section>
+
+  <aside class="right">
+    <div class="rtabs" id="rtabs">
+      <button class="on" data-rt="cc"><svg class="i" data-i="sliders"></svg> Color Correction</button>
+      <button data-rt="adv"><svg class="i" data-i="wand"></svg> Advanced</button>
+      <button data-rt="pre"><svg class="i" data-i="presets"></svg> Presets</button>
+    </div>
+    <div class="rbody glass neon" id="rbody">
+      <div id="rt-cc">
+        <section class="rsec">
+          <h3 class="rh">White Balance (Underwater) <button class="auto" id="autoWB"><svg class="i" data-i="wand"></svg> Auto</button></h3>
+          <div id="sl-wb"></div>
+        </section>
+        <section class="rsec">
+          <h3 class="rh tog">Color &amp; Tone <svg class="i chev" data-i="down"></svg></h3>
+          <div id="sl-tone"></div>
+        </section>
+        <section class="rsec">
+          <h3 class="rh tog"><svg class="i" data-i="tools"></svg> Underwater Tools <svg class="i chev" data-i="down"></svg></h3>
+          <div id="toggles"></div>
+        </section>
+      </div>
+      <div id="rt-adv" hidden>
+        <section class="rsec"><h3 class="rh">Strength &amp; Detail</h3><div id="sl-adv"></div></section>
+        <p class="hint">Underwater tools must be switched on (Color Correction tab) for their strength to apply.</p>
+      </div>
+      <div id="rt-pre" hidden>
+        <div class="preset-grid" id="presetGrid"></div>
+        <button class="btn wide" id="savePreset"><svg class="i" data-i="plus"></svg> Save current as preset</button>
+      </div>
+    </div>
+    <div class="actions">
+      <button class="btn" id="resetBtn"><svg class="i" data-i="reset"></svg> Reset</button>
+      <button class="btn" id="compareBtn"><svg class="i" data-i="compare"></svg> Compare</button>
+      <button class="btn primary" id="exportBtn"><svg class="i" data-i="export"></svg> Export</button>
+    </div>
+  </aside>
+</main>
+
+<!-- ============ BATCH ============ -->
+<section class="page" id="view-batch" hidden>
+  <div class="glass neon pad">
+    <h2>Batch</h2>
+    <p class="muted">Apply the current settings to every photo you opened and export them all in one go. Photos are processed on this device.</p>
+    <div class="row">
+      <button class="btn" id="applyAll"><svg class="i" data-i="layers"></svg> Apply current settings to all photos</button>
+      <button class="btn primary" id="zipAll"><svg class="i" data-i="export"></svg> Export all as ZIP</button>
+      <button class="btn" id="folderAll" hidden><svg class="i" data-i="folder"></svg> Save to a folder…</button>
+    </div>
+    <div class="progress" id="batchProg" hidden><i></i><span></span></div>
+    <ul class="batch-list" id="batchList"></ul>
+  </div>
+</section>
+
+<!-- ============ PRESETS PAGE ============ -->
+<section class="page" id="view-presets" hidden>
+  <div class="glass neon pad">
+    <h2>Presets</h2>
+    <p class="muted">One click looks for common underwater conditions. Your own presets are stored in this browser only.</p>
+    <div class="preset-grid big" id="presetGrid2"></div>
+    <button class="btn" id="savePreset2"><svg class="i" data-i="plus"></svg> Save current settings as preset</button>
+  </div>
+</section>
+
+<!-- ============ DIALOGS ============ -->
+<dialog id="dlgExport" class="dlg glass">
+  <form method="dialog" class="dlg-in" id="exportForm">
+    <h2>Export</h2>
+    <p class="muted" id="exName">—</p>
+    <div id="exImg">
+      <label>Format
+        <select id="exFmt"><option value="image/jpeg">JPEG</option><option value="image/png">PNG (lossless)</option><option value="image/webp">WebP</option></select>
+      </label>
+      <label>Quality <output id="exQv">92</output>
+        <input type="range" id="exQ" min="50" max="100" value="92">
+      </label>
+      <label>Size
+        <select id="exSize"><option value="0">Original size</option><option value="3840">Long edge 3840 px</option><option value="2048">Long edge 2048 px</option><option value="1280">Long edge 1280 px</option></select>
+      </label>
+    </div>
+    <p class="muted" id="exVid" hidden>Videos are re-rendered in real time, with your corrections, to a <b>.webm</b> file at up to 960 px on the long edge. Keep this tab visible until it finishes.</p>
+    <div class="progress" id="exProg" hidden><i></i><span></span></div>
+    <div class="row end">
+      <button value="cancel" class="btn" id="exCancel">Close</button>
+      <button class="btn primary" id="exGo" value="default"><svg class="i" data-i="export"></svg> Export &amp; save</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlgHelp" class="dlg glass">
+  <form method="dialog" class="dlg-in">
+    <h2>About Dive ColorLab</h2>
+    <p>A static, privacy-friendly underwater colour lab. Open photos and videos from your computer, correct them, and export the result. Nothing leaves your device.</p>
+    <p class="muted">Supported: JPG, PNG, WebP, AVIF, GIF (first frame) and browser-playable video (MP4, WebM, MOV on some browsers). RAW and HEIC are not decodable by browsers.</p>
+    <h3>Sample photo credits (Wikimedia Commons)</h3>
+    <ul class="credits" id="credits"></ul>
+    <div class="row end"><button class="btn primary" value="ok">Close</button></div>
+  </form>
+</dialog>
+
+<dialog id="dlgProj" class="dlg glass">
+  <form method="dialog" class="dlg-in">
+    <h2>Projects</h2>
+    <p class="muted">A project file stores your correction settings (not your media) so you can continue later. Re-open the same files, then open the project.</p>
+    <div class="row">
+      <button type="button" class="btn" id="projSave"><svg class="i" data-i="export"></svg> Save project file</button>
+      <button type="button" class="btn" id="projOpen"><svg class="i" data-i="folder"></svg> Open project file</button>
+    </div>
+    <div class="row end"><button class="btn" value="ok">Close</button></div>
+  </form>
+</dialog>
+
+<input type="file" id="fileInput" accept="image/*,video/*" multiple hidden>
+<input type="file" id="projInput" accept=".json,application/json" hidden>
+<div class="dropveil" id="dropveil" hidden><div>Drop photos or videos to open them locally</div></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script src="js/engine.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
