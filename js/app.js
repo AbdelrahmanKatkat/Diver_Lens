@@ -333,6 +333,7 @@ const TOGGLES = [
   { k: 'cast', l: 'Remove Color Cast (Blue/Green)', i: 'drop' },
   { k: 'dehaze', l: 'Dehaze / Clarity', i: 'cloud' },
   { k: 'backscatter', l: 'Backscatter Reduction', i: 'wave' },
+  { k: 'skin', l: 'Protect Skin Tones', i: 'drop' },
   { k: 'noise', l: 'Noise Reduction', i: 'sliders' },
 ];
 const showVal = (v, dec = 0) => (v > 0 ? '+' : '') + (dec ? v.toFixed(dec) : Math.round(v));

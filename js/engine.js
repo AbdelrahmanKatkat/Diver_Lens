@@ -18,7 +18,7 @@ const Engine = (() => {
     const hsl = {};
     BANDS.forEach((b) => (hsl[b.id] = { h: 0, s: 0, l: 0 }));
     return {
-      temp: 0, tint: 0, exposure: 0, contrast: 0, highlights: 0, shadows: 0, vibrance: 0, saturation: 0, clarity: 0, levels: 0,
+      temp: 0, tint: 0, exposure: 0, contrast: 0, highlights: 0, shadows: 0, vibrance: 0, saturation: 0, clarity: 0, levels: 0, skin: true,
       cast: false, castAmt: 70, dehaze: false, dehazeAmt: 40, backscatter: false, backAmt: 35, noise: false, noiseAmt: 40,
       curves: { rgb: [[0, 0], [1, 1]], r: [[0, 0], [1, 1]], g: [[0, 0], [1, 1]], b: [[0, 0], [1, 1]] },
       wheels: { shadows: { x: 0, y: 0, l: 0 }, mid: { x: 0, y: 0, l: 0 }, high: { x: 0, y: 0, l: 0 } },
@@ -182,12 +182,14 @@ const Engine = (() => {
     const kR = Math.max(0, st.g - st.r) * a, kB = Math.max(0, st.g - st.b) * a;
     const ex = Math.pow(2, p.exposure);
     const gr = (1 + p.temp * 0.004) * ex, gb = (1 - p.temp * 0.004) * ex, gg = (1 + p.tint * 0.003) * ex;
+    const skin = p.skin !== false;
     const dz = p.dehaze ? clamp(p.dehazeAmt / 100, 0, 1) : 0;
     const tr = st.trans, tw = st.tw, th = st.th, sx = tw / w, sy = th / h;
 
     let qr = 0, qg = 0, qb = 0;
     const stage1 = (r, g, b) => {
-      r += kR * (1 - r) * g; b += kB * (1 - b) * g;
+      const warm = skin ? clamp((r / (Math.max(g, b) + 0.03) - 1) / 0.5, 0, 1) : 0;
+      r += kR * (1 - r) * g * (1 - warm); b += kB * (1 - b) * g;
       r *= gr; g *= gg; b *= gb;
       if (r > 0.85) r = 0.85 + 0.15 * Math.tanh((r - 0.85) / 0.15);
       if (g > 0.85) g = 0.85 + 0.15 * Math.tanh((g - 0.85) / 0.15);
@@ -197,9 +199,9 @@ const Engine = (() => {
     const Araw = st.A || [0.3, 0.55, 0.75];
     stage1(Araw[0], Araw[1], Araw[2]);
     const A1r = qr, A1g = qg, A1b = qb, A1min = Math.max(0.05, Math.min(A1g, A1b));
-    const dehaze = (x, y) => {
+    const dehaze = (x, y, prot) => {
       let t = tr ? tr[((y * sy) | 0) * tw + ((x * sx) | 0)] : 1 - 0.95 * Math.min(1, Math.min(qg, qb) / A1min);
-      t = 1 - dz * (1 - t); if (t < 0.3) t = 0.3;
+      t = 1 - dz * (1 - prot * 0.95) * (1 - t); if (t < 0.3) t = 0.3;
       qr = (qr - A1r) / t + A1r; qg = (qg - A1g) / t + A1g; qb = (qb - A1b) / t + A1b;
     };
 
@@ -212,10 +214,10 @@ const Engine = (() => {
       for (let y = 0; y < h; y += step) for (let x = 0; x < w; x += step) {
         const i = (y * w + x) * 4;
         stage1(input[i] / 255, input[i + 1] / 255, input[i + 2] / 255);
-        if (dz > 0) dehaze(x, y);
+        if (dz > 0) dehaze(x, y, 0);
         H[0][clamp((qr * 255) | 0, 0, 255)]++; H[1][clamp((qg * 255) | 0, 0, 255)]++; H[2][clamp((qb * 255) | 0, 0, 255)]++; cnt++;
       }
-      const minRange = [0.55, 0.45, 0.45];
+      const minRange = [0.7, 0.45, 0.45];
       for (let c = 0; c < 3; c++) {
         let acc = 0, l = 0, hgh = 255, gotL = false;
         for (let v = 0; v < 256; v++) { acc += H[c][v]; if (!gotL && acc >= cnt * 0.005) { l = v; gotL = true; } if (acc >= cnt * 0.995) { hgh = v; break; } }
@@ -241,15 +243,24 @@ const Engine = (() => {
     const bands = BANDS.map((b) => ({ c: b.c, ...p.hsl[b.id] })).filter((b) => b.h || b.s || b.l);
     const hslOn = bands.length > 0;
 
+    // soft mask for skin-like hues (orange, g/r about 0.45-0.9, blue below green)
+    const skinMask = (r, g, b) => {
+      if (!skin || r < 0.12 || r < g || g < b * 0.95) return 0;
+      const gr = g / r;
+      return clamp(Math.min((gr - 0.3) / 0.15, (0.95 - gr) / 0.1), 0, 1);
+    };
     const out = dst;
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
         const i = (y * w + x) * 4;
-        stage1(input[i] / 255, input[i + 1] / 255, input[i + 2] / 255);
-        if (dz > 0) dehaze(x, y);
+        const r0 = input[i] / 255, g0 = input[i + 1] / 255, b0 = input[i + 2] / 255;
+        const m0 = skinMask(r0, g0, b0);   // judged on the ORIGINAL pixel: near-surface skin is already warm
+        stage1(r0, g0, b0);
+        if (dz > 0) dehaze(x, y, m0);
         let r = qr, g = qg, b = qb;
         if (L > 0) {
-          r += ((r - lo[0]) * sc[0] - r) * L; g += ((g - lo[1]) * sc[1] - g) * L; b += ((b - lo[2]) * sc[2] - b) * L;
+          const Lp = L * (1 - 0.9 * Math.max(m0, skinMask(r, g, b)));
+          r += ((r - lo[0]) * sc[0] - r) * Lp; g += ((g - lo[1]) * sc[1] - g) * Lp; b += ((b - lo[2]) * sc[2] - b) * Lp;
         }
         r = r < 0 ? 0 : r > 1 ? 1 : r; g = g < 0 ? 0 : g > 1 ? 1 : g; b = b < 0 ? 0 : b > 1 ? 1 : b;
 
@@ -267,7 +278,8 @@ const Engine = (() => {
         }
         if (vib || sat !== 1) {
           r = clamp(r, 0, 1); g = clamp(g, 0, 1); b = clamp(b, 0, 1);
-          const mx = Math.max(r, g, b), mi = Math.min(r, g, b), f = sat * (1 + vib * (1 - (mx - mi)));
+          const sm = Math.max(m0, skinMask(r, g, b)), mx = Math.max(r, g, b), mi = Math.min(r, g, b);
+          const f = (1 + (sat - 1) * (1 - 0.8 * sm)) * (1 + vib * (1 - sm) * (1 - (mx - mi)));
           Y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
           r = Y + (r - Y) * f; g = Y + (g - Y) * f; b = Y + (b - Y) * f;
         }
@@ -294,6 +306,18 @@ const Engine = (() => {
             const q = l < 0.5 ? l * (1 + s) : l + s - l * s, pp = 2 * l - q, hk = hh / 360;
             const f = (t) => { t = (t + 1) % 1; return t < 1 / 6 ? pp + (q - pp) * 6 * t : t < 0.5 ? q : t < 2 / 3 ? pp + (q - pp) * (2 / 3 - t) * 6 : pp; };
             r = f(hk + 1 / 3); g = f(hk); b = f(hk - 1 / 3);
+          }
+        }
+        if (m0 > 0) {   // keep the shot's own hue on skin: change brightness/contrast only
+          const wk = Math.min(1, m0 * 1.6) * 0.8, yo = 0.2126 * r + 0.7152 * g + 0.0722 * b, yr = Math.max(0.02, 0.2126 * r0 + 0.7152 * g0 + 0.0722 * b0), sc2 = yo / yr;
+          r += (clamp(r0 * sc2, 0, 1) - r) * wk; g += (clamp(g0 * sc2, 0, 1) - g) * wk; b += (clamp(b0 * sc2, 0, 1) - b) * wk;
+        }
+        if (m0 > 0) {   // skin must never end up more saturated than it was shot
+          const cIn = Math.max(r0, g0, b0) - Math.min(r0, g0, b0), cOut = Math.max(r, g, b) - Math.min(r, g, b);
+          const lim = cIn * Math.max(1, ex) * 1.02 + 0.01;
+          if (cOut > lim) {
+            const k = 1 - Math.min(1, m0 * 1.6) * (1 - lim / cOut), yy = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+            r = yy + (r - yy) * k; g = yy + (g - yy) * k; b = yy + (b - yy) * k;
           }
         }
         out[i] = r * 255 + 0.5; out[i + 1] = g * 255 + 0.5; out[i + 2] = b * 255 + 0.5; out[i + 3] = 255;
