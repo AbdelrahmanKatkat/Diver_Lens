@@ -202,11 +202,22 @@ async function selectItem(i) {
 }
 
 function requestRender() { if (S.raf) return; S.raf = requestAnimationFrame(() => { S.raf = 0; render(); }); }
+let glr, glx;   // preview renderer / export renderer (WebGL2); null = CPU fallback
+const getGL = () => (glr === undefined ? (glr = GLR.create()) : glr);
+const getExportGL = () => (glx === undefined ? (glx = GLR.create()) : glx);
 function render() {
   const it = cur(); if (!it || !S.work) return;
   if (it.kind === 'video') { drawVideoFrame(); return; }
   if (!S.work.src) return;
   const { w, h, src, out } = S.work;
+  const g = getGL();
+  if (g) {
+    try {
+      if (g.srcItem !== it) { g.upload(it.el); g.srcItem = it; }
+      g.setSize(w, h); g.render(it.params, it.st, E.getLevels(it.params, it.st, src, w, h));
+      xA.drawImage(g.canvas, 0, 0); return;
+    } catch (e) { console.warn('GPU render failed, using CPU', e); glr = null; }
+  }
   E.process(src, out.data, w, h, it.params, it.st);
   xA.putImageData(out, 0, 0);
 }
@@ -214,6 +225,14 @@ function drawVideoFrame() {
   const it = cur(); if (!it || it.kind !== 'video' || !S.work || !S.work.x) return;
   const { w, h, x, out } = S.work;
   if (it.el.readyState < 2) return;
+  const g = getGL();
+  if (g) {
+    try {
+      g.setSize(w, h); g.upload(it.el); g.srcItem = it;
+      g.render(it.params, it.st, E.getLevels(it.params, it.st, null, 0, 0));
+      xA.drawImage(g.canvas, 0, 0); xB.drawImage(it.el, 0, 0, w, h); return;
+    } catch (e) { console.warn('GPU render failed, using CPU', e); glr = null; }
+  }
   x.drawImage(it.el, 0, 0, w, h);
   xB.drawImage(S.work.c, 0, 0);
   const id = x.getImageData(0, 0, w, h);
@@ -593,9 +612,19 @@ const toBlob = (cv, type, q) => new Promise((res, rej) => cv.toBlob((b) => (b ? 
 const EXT = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' };
 
 async function renderFull(item, maxSide) {
-  if (!item.st) prepare(item);
+  const wk = prepare(item);   // fresh statistics + working-resolution data (levels are measured from this)
   const cap = Math.min(maxSide || 8192, 8192), sc = Math.min(1, cap / Math.max(item.w, item.h));
   const w = Math.max(1, Math.round(item.w * sc)), h = Math.max(1, Math.round(item.h * sc));
+  const gx = getExportGL();
+  if (gx) {
+    try {
+      gx.setSize(w, h); gx.upload(item.el); gx.srcItem = item;
+      gx.render(item.params, item.st, E.getLevels(item.params, item.st, wk.src, wk.w, wk.h));
+      const c2 = document.createElement('canvas'); c2.width = gx.canvas.width; c2.height = gx.canvas.height;
+      c2.getContext('2d').drawImage(gx.canvas, 0, 0); gx.setSize(16, 16);
+      return c2;
+    } catch (e) { console.warn('GPU export failed, using CPU', e); glx = null; }
+  }
   const c = document.createElement('canvas'); c.width = w; c.height = h;
   const x = c.getContext('2d', { willReadFrequently: true });
   x.imageSmoothingQuality = 'high'; x.drawImage(item.el, 0, 0, w, h);
@@ -610,7 +639,7 @@ async function encodeImage(item, fmtType, q, maxSide) {
 }
 const exOpts = () => ({ type: $('#exFmt').value, q: $('#exQ').value / 100, size: +$('#exSize').value });
 
-async function exportVideo(item, prog) {
+async function exportVideoRealtime(item, prog) {
   if (!window.MediaRecorder) throw new Error('This browser cannot record video. Try Chrome, Edge or Firefox.');
   const v = document.createElement('video'); v.playsInline = true; v.preload = 'auto'; v.src = item.url;
   await once(v, 'loadeddata');
@@ -646,6 +675,117 @@ async function exportVideo(item, prog) {
   return S.abort ? null : blob;
 }
 
+/* ---- fast MP4 export: GPU frames -> WebCodecs (H.264) + AAC audio -> mp4-muxer. Frame-accurate, not real-time. ---- */
+async function detectFps(v) {
+  if (!v.requestVideoFrameCallback) return 30;
+  return new Promise((res) => {
+    const ts = []; let done = false;
+    const fin = () => {
+      if (done) return; done = true; v.pause();
+      const d = []; for (let i = 1; i < ts.length; i++) if (ts[i] - ts[i - 1] > 1e-4) d.push(ts[i] - ts[i - 1]);
+      if (d.length < 3) return res(30);
+      d.sort((a, b) => a - b); const f = 1 / d[d.length >> 1];
+      res([23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60].reduce((a, b) => (Math.abs(b - f) < Math.abs(a - f) ? b : a)));
+    };
+    const cb = (now, meta) => { ts.push(meta.mediaTime); if (ts.length >= 12) fin(); else v.requestVideoFrameCallback(cb); };
+    v.requestVideoFrameCallback(cb); v.play().catch(fin); setTimeout(fin, 2500);
+  });
+}
+const canMP4 = () => !!(window.VideoEncoder && window.Mp4Muxer && GLR.supported());
+
+async function exportVideoMP4(item, prog) {
+  const maxSide = +$('#vSize').value, bpp = +$('#vQ').value;
+  const v = document.createElement('video'); v.muted = true; v.playsInline = true; v.preload = 'auto'; v.src = item.url;
+  await once(v, 'loadeddata');
+  const dur = v.duration, fps = clamp(Math.round(await detectFps(v)), 1, 30);
+  const sc = Math.min(1, maxSide / Math.max(item.w, item.h)), w = Math.round(item.w * sc) & ~1, h = Math.round(item.h * sc) & ~1;
+  const g = GLR.create(); if (!g) throw new Error('no GPU');
+  try {
+    g.setSize(w, h);
+    const bitrate = Math.round(clamp(w * h * fps * bpp, 2e6, 80e6)), big = w * h > 1920 * 1088;
+    let cfg = null;
+    for (const k of [{ c: 'avc1.' + (big ? '640033' : '640028'), m: 'avc' }, { c: 'avc1.4d0028', m: 'avc' }, { c: 'vp09.00.40.08', m: 'vp9' }]) {
+      try { const conf = { codec: k.c, width: w, height: h, bitrate, framerate: fps, latencyMode: 'quality' }; if ((await VideoEncoder.isConfigSupported(conf)).supported) { cfg = { conf, m: k.m }; break; } } catch (e) {}
+    }
+    if (!cfg) throw new Error('this browser cannot encode H.264');
+
+    // audio: decode locally, re-encode as AAC (the picture changes, the sound is kept)
+    let audio = null;
+    if (window.AudioEncoder) {
+      try {
+        const ac = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+        const buf = await ac.decodeAudioData(await (await fetch(item.url)).arrayBuffer()); ac.close();
+        const ch = Math.min(2, buf.numberOfChannels);
+        for (const k of [{ c: 'mp4a.40.2', m: 'aac' }, { c: 'opus', m: 'opus' }]) {
+          try { if ((await AudioEncoder.isConfigSupported({ codec: k.c, sampleRate: 48000, numberOfChannels: ch, bitrate: 160000 })).supported) { audio = { buf, ch, k }; break; } } catch (e) {}
+        }
+      } catch (e) { audio = null; }
+    }
+    const target = new Mp4Muxer.ArrayBufferTarget();
+    const mux = new Mp4Muxer.Muxer({ target, video: { codec: cfg.m, width: w, height: h, frameRate: fps }, audio: audio ? { codec: audio.k.m, numberOfChannels: audio.ch, sampleRate: 48000 } : undefined, fastStart: 'in-memory' });
+    let encErr = null;
+    const tick = () => new Promise((r) => setTimeout(r, 0));
+
+    if (audio) {
+      const aenc = new AudioEncoder({ output: (c, m) => mux.addAudioChunk(c, m), error: (e) => (encErr = e) });
+      aenc.configure({ codec: audio.k.c, sampleRate: 48000, numberOfChannels: audio.ch, bitrate: 160000 });
+      const total = Math.min(audio.buf.length, Math.round(dur * 48000)), CH = 48000;
+      for (let off = 0; off < total; off += CH) {
+        const n = Math.min(CH, total - off), data = new Float32Array(n * audio.ch);
+        for (let c = 0; c < audio.ch; c++) data.set(audio.buf.getChannelData(c).subarray(off, off + n), c * n);
+        const ad = new AudioData({ format: 'f32-planar', sampleRate: 48000, numberOfFrames: n, numberOfChannels: audio.ch, timestamp: Math.round(off / 48000 * 1e6), data });
+        aenc.encode(ad); ad.close();
+        if (aenc.encodeQueueSize > 20) await tick();
+        if (S.abort) throw new Error('cancelled');
+      }
+      await aenc.flush(); aenc.close();
+    }
+
+    const venc = new VideoEncoder({ output: (c, m) => mux.addVideoChunk(c, m), error: (e) => (encErr = e) });
+    venc.configure(cfg.conf);
+    const N = Math.max(1, Math.floor(dur * fps)), dt = 1e6 / fps, t0 = performance.now();
+    const seekTo = (t) => new Promise((res) => {
+      if (Math.abs(v.currentTime - t) < 1e-4) return res();
+      let done = false; const fin = () => { if (done) return; done = true; v.removeEventListener('seeked', fin); res(); };
+      v.addEventListener('seeked', fin); setTimeout(fin, 4000); v.currentTime = t;
+    });
+    const T = { seek: 0, gpu: 0, encode: 0, wait: 0 }, now = () => performance.now();
+    for (let i = 0; i < N; i++) {
+      if (S.abort) throw new Error('cancelled');
+      if (encErr) throw encErr;
+      let m = now();
+      await seekTo(Math.min(dur - 0.001, i / fps + 0.25 / fps));
+      for (let k = 0; v.readyState < 2 && k < 200; k++) await tick();   // wait until the frame is really decodable
+      T.seek += now() - m; m = now();
+      g.upload(v);
+      g.render(item.params, item.st, E.getLevels(item.params, item.st, null, 0, 0));
+      const fr = new VideoFrame(g.canvas, { timestamp: Math.round(i * dt), duration: Math.round(dt) }); T.gpu += now() - m; m = now();
+      venc.encode(fr, { keyFrame: i % (fps * 2) === 0 }); fr.close(); T.encode += now() - m; m = now();
+      while (venc.encodeQueueSize > 8) await new Promise((r) => setTimeout(r, 4));
+      T.wait += now() - m;
+      if (i % 3 === 0) {
+        const el = (performance.now() - t0) / 1000, rate = (i + 1) / Math.max(el, 0.001), left = Math.max(0, Math.round((N - i - 1) / rate));
+        prog((i + 1) / N, `Frame ${i + 1} / ${N} · ${rate.toFixed(1)} fps · about ${left}s left`);
+        await tick();
+      }
+    }
+    await venc.flush(); venc.close();
+    console.info('[export] ms/frame ' + JSON.stringify(Object.fromEntries(Object.entries(T).map(([k, x]) => [k, +(x / N).toFixed(1)]))) + ' codec', cfg.conf.codec, 'fps', fps, w + 'x' + h);
+    if (encErr) throw encErr;
+    mux.finalize();
+    return { blob: new Blob([target.buffer], { type: 'video/mp4' }), ext: 'mp4', mime: 'video/mp4' };
+  } finally { g.dispose(); v.removeAttribute('src'); v.load(); }
+}
+
+async function exportVideo(item, prog) {
+  if (canMP4()) {
+    try { return await exportVideoMP4(item, prog); }
+    catch (e) { if (e && e.message === 'cancelled') return null; console.warn('MP4 export failed', e); toast('MP4 export unavailable here (' + (e.message || e) + '). Using compatible WebM mode.'); }
+  }
+  const blob = await exportVideoRealtime(item, prog);
+  return blob ? { blob, ext: 'webm', mime: 'video/webm' } : null;
+}
+
 /* export dialog */
 const dlgEx = $('#dlgExport');
 function setProg(el, p, txt) { el.hidden = false; $('i', el).style.width = Math.round(p * 100) + '%'; $('span', el).textContent = txt || Math.round(p * 100) + '%'; }
@@ -654,6 +794,7 @@ function openExport() {
   $('#exName').textContent = it.name;
   $('#exImg').hidden = it.kind === 'video'; $('#exVid').hidden = it.kind !== 'video';
   $('#exProg').hidden = true; $('#exGo').disabled = false;
+  if (it.kind === 'video' && !canMP4()) $('#vNote').innerHTML = 'This browser cannot create MP4 here, so the video is saved as <b>WebM</b> in compatible mode (slower, up to 960 px). Use a recent Chrome or Edge for fast MP4 export.';
   if (!dlgEx.open) dlgEx.showModal();
 }
 $('#exQ').oninput = () => ($('#exQv').textContent = $('#exQ').value);
@@ -673,12 +814,13 @@ $('#exGo').onclick = async (e) => {
       await saveBlob(blob, name, handle);
       setProg($('#exProg'), 1, 'Saved ✓');
     } else {
-      const name = `${slug(it.name)}_colorlab.webm`;
-      const handle = await pickSave(name, 'video/webm', 'webm');
+      const want = canMP4() ? 'mp4' : 'webm';
+      let handle = await pickSave(`${slug(it.name)}_colorlab.${want}`, want === 'mp4' ? 'video/mp4' : 'video/webm', want);
       it.el.pause();
-      const blob = await exportVideo(it, (p) => setProg($('#exProg'), p, `Rendering ${Math.round(p * 100)}%`));
-      if (!blob) throw new Error('cancelled');
-      await saveBlob(blob, name, handle);
+      const res = await exportVideo(it, (p, txt) => setProg($('#exProg'), p, txt || `Rendering ${Math.round(p * 100)}%`));
+      if (!res) throw new Error('cancelled');
+      if (res.ext !== want) handle = null;   // fell back to another format: use a normal download instead
+      await saveBlob(res.blob, `${slug(it.name)}_colorlab.${res.ext}`, handle);
       setProg($('#exProg'), 1, 'Saved ✓');
     }
     markStep('exported'); toast('Exported. Your file is saved on your device.');

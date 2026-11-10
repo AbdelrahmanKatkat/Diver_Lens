@@ -196,7 +196,15 @@
         <select id="exSize"><option value="0">Original size</option><option value="3840">Long edge 3840 px</option><option value="2048">Long edge 2048 px</option><option value="1280">Long edge 1280 px</option></select>
       </label>
     </div>
-    <p class="muted" id="exVid" hidden>Videos are re-rendered in real time, with your corrections, to a <b>.webm</b> file at up to 960 px on the long edge. Keep this tab visible until it finishes.</p>
+    <div id="exVid" hidden>
+      <label>Resolution
+        <select id="vSize"><option value="1920" selected>Up to 1080p (recommended)</option><option value="1280">720p (fastest)</option><option value="3840">Original size, up to 4K</option></select>
+      </label>
+      <label>Quality
+        <select id="vQ"><option value="0.12" selected>High</option><option value="0.07">Standard (smaller file)</option><option value="0.2">Maximum</option></select>
+      </label>
+      <p class="muted" id="vNote">Saved as <b>MP4 (H.264 + AAC)</b>, which plays everywhere. Frames are rendered on your graphics card, faster than real time. Keep this tab visible until it finishes.</p>
+    </div>
     <div class="progress" id="exProg" hidden><i></i><span></span></div>
     <div class="row end">
       <button value="cancel" class="btn" id="exCancel">Close</button>
@@ -234,6 +242,8 @@
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <script src="js/engine.js"></script>
+<script src="js/gl.js"></script>
+<script src="js/vendor/mp4-muxer.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

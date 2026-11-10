@@ -15,7 +15,8 @@ It is a pure static website: no server, no build step, no account. **Your files 
 - **Quick Actions**: Auto Enhance, Color Restore, Remove Haze, Dehaze + Contrast, Underwater WB, Denoise.
 - **Presets**: built-in looks (Tropical Reef, Blue Water, Green Water, Cave / Low Light, Wreck Cinematic, Macro Pop) plus your own, saved in the browser.
 - **Before / After**: draggable split, side-by-side, or original only.
-- **Export**: JPEG, PNG or WebP at full resolution; video to `.webm`; batch export as a ZIP or into a folder; project files that store your settings.
+- **Export**: JPEG, PNG or WebP at full resolution; **video to MP4 (H.264 + AAC)** up to the original resolution; batch export as a ZIP or into a folder; project files that store your settings.
+- **Fast**: the colour engine runs on your graphics card (WebGL2), so sliders and video preview are real-time. A CPU version is used automatically if WebGL2 is not available.
 - **Dark and light theme**: follows your system, toggle in the header.
 
 ## How to use
@@ -33,7 +34,8 @@ The bar under the header shows the workflow:
 
 ### Notes
 
-- Video export is re-rendered in real time (up to 960 px on the long edge). Keep the tab visible until it finishes. Output is `.webm`.
+- Video export renders frame by frame on your GPU and encodes MP4 with the browser's built-in encoder (WebCodecs), keeping the original audio. Choose 720p, 1080p or original size (up to 4K). Keep the tab visible until it finishes. Browsers without WebCodecs fall back to a slower WebM mode.
+- Video levels are measured once per clip, so the colour does not flicker between frames.
 - RAW and HEIC files cannot be decoded by browsers.
 - Presets and theme are stored in your browser's local storage only.
 
@@ -57,7 +59,9 @@ python -m http.server 8000
 ```
 index.html        page markup
 css/style.css     layout and dark / light themes
-js/engine.js      colour-processing engine, curves, statistics, ZIP writer
+js/engine.js      colour-processing engine (CPU reference), curves, statistics, ZIP writer
+js/gl.js          the same engine as a WebGL2 shader (live preview and fast export)
+js/vendor/        mp4-muxer (MIT) used to write MP4 files
 js/app.js         interface, file opening, comparison, export
 assets/           background, sample photos, logo
 ```
@@ -73,3 +77,5 @@ Sample photos are from Wikimedia Commons:
 - Coral reef: NOAA Photo Library (public domain)
 
 The page background is a cinematic coral reef illustration supplied with the project.
+
+MP4 writing uses [mp4-muxer](https://github.com/Vanilagy/mp4-muxer) by Vanilagy (MIT license, included in `js/vendor/`).
