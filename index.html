@@ -74,6 +74,9 @@
         <span class="tag tag-b">Before</span>
         <span class="tag tag-a">After</span>
         <div class="handle" id="handle" role="slider" tabindex="0" aria-label="Before / after divider" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50"><span><svg class="i" data-i="lr"></svg></span></div>
+        <div class="crop" id="cropUI" hidden>
+          <div class="crect" id="cropRect"><i></i><i></i><b data-h="nw"></b><b data-h="n"></b><b data-h="ne"></b><b data-h="e"></b><b data-h="se"></b><b data-h="s"></b><b data-h="sw"></b><b data-h="w"></b></div>
+        </div>
       </div>
       <div class="busy" id="busy" hidden><i></i><span id="busyTxt">Working…</span></div>
       <div class="empty" id="empty" hidden>
@@ -119,9 +122,10 @@
 
   <aside class="right">
     <div class="rtabs" id="rtabs">
-      <button class="on" data-rt="cc"><svg class="i" data-i="sliders"></svg> Color Correction</button>
+      <button class="on" data-rt="cc"><svg class="i" data-i="sliders"></svg> Color</button>
       <button data-rt="adv"><svg class="i" data-i="wand"></svg> Advanced</button>
       <button data-rt="pre"><svg class="i" data-i="presets"></svg> Presets</button>
+      <button data-rt="crop"><svg class="i" data-i="film"></svg> Crop &amp; Trim</button>
     </div>
     <div class="rbody glass neon" id="rbody">
       <div id="rt-cc">
@@ -145,6 +149,36 @@
       <div id="rt-pre" hidden>
         <div class="preset-grid" id="presetGrid"></div>
         <button class="btn wide" id="savePreset"><svg class="i" data-i="plus"></svg> Save current as preset</button>
+      </div>
+      <div id="rt-crop" hidden>
+        <section class="rsec">
+          <h3 class="rh">Crop &amp; Rotate</h3>
+          <div class="seg wrap" id="aspSeg" role="group" aria-label="Crop shape">
+            <button class="on" data-a="free">Free</button><button data-a="orig">Original</button><button data-a="1">1:1</button><button data-a="1.3333">4:3</button><button data-a="1.5">3:2</button><button data-a="1.7778">16:9</button><button data-a="0.5625">9:16</button><button data-a="0.8">4:5</button>
+          </div>
+          <div class="tools2">
+            <button class="btn sm" id="rotL"><svg class="i" data-i="rotl"></svg> Rotate left</button>
+            <button class="btn sm" id="rotR"><svg class="i" data-i="rotr"></svg> Rotate right</button>
+            <button class="btn sm" id="flipH"><svg class="i" data-i="flipH"></svg> Flip horizontal</button>
+            <button class="btn sm" id="flipV"><svg class="i" data-i="flipV"></svg> Flip vertical</button>
+          </div>
+          <p class="hint"><span id="cropInfo"></span><br>Drag the frame or its handles on the preview. Switch to another tab to see the cropped result.</p>
+          <button class="btn wide sm" id="cropReset"><svg class="i" data-i="reset"></svg> Reset crop &amp; rotation</button>
+        </section>
+        <section class="rsec" id="vidEdit" hidden>
+          <h3 class="rh">Trim &amp; Speed</h3>
+          <div id="sl-trim"></div>
+          <div class="tools2">
+            <button class="btn sm" id="setIn">Start = playhead</button>
+            <button class="btn sm" id="setOut">End = playhead</button>
+          </div>
+          <div id="sl-fade"></div>
+          <small class="lbl">Speed</small>
+          <div class="seg wrap" id="spdSeg" role="group" aria-label="Playback speed">
+            <button data-s="0.25">0.25×</button><button data-s="0.5">0.5×</button><button class="on" data-s="1">1×</button><button data-s="1.5">1.5×</button><button data-s="2">2×</button><button data-s="4">4×</button>
+          </div>
+          <div class="tg" id="tgMute"><span>Remove audio</span><button class="sw" id="swMute" role="switch" aria-checked="false" aria-label="Remove audio"></button></div>
+        </section>
       </div>
     </div>
     <div class="actions">

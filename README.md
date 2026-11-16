@@ -15,6 +15,8 @@ It is a pure static website: no server, no build step, no account. **Your files 
 - **Quick Actions**: Auto Enhance, Color Restore, Remove Haze, Dehaze + Contrast, Underwater WB, Denoise.
 - **Presets**: built-in looks (Tropical Reef, Blue Water, Green Water, Cave / Low Light, Wreck Cinematic, Macro Pop) plus your own, saved in the browser.
 - **Before / After**: draggable split, side-by-side, or original only.
+- **Crop, rotate and flip**: drag a crop frame on the preview (free, original, 1:1, 4:3, 3:2, 16:9, 9:16 or 4:5), rotate in 90° steps and flip. Works for photos and videos and is applied on export.
+- **Video editing**: trim start and end, speed from 0.25× to 4×, fade in and out, remove the audio. The preview and the exported MP4 follow your edits.
 - **Export**: JPEG, PNG or WebP at full resolution; **video to MP4 (H.264 + AAC)** up to the original resolution; batch export as a ZIP or into a folder; project files that store your settings.
 - **Fast**: the colour engine runs on your graphics card (WebGL2), so sliders and video preview are real-time. A CPU version is used automatically if WebGL2 is not available.
 - **Dark and light theme**: follows your system, toggle in the header.
@@ -27,6 +29,8 @@ The bar under the header shows the workflow:
 2. **Correct**: pick a photo in the filmstrip, then try **Auto Enhance**, or adjust the sliders on the right (Color Correction / Advanced / Presets tabs), Curves, Color Wheels and HSL at the bottom. Double-click a slider label to reset it.
 3. **Compare**: drag the divider on the preview, or press **Compare** to cycle split, side-by-side and original.
 4. **Export**: click **Export**, choose format, quality and size, and save. In Chrome and Edge you get a normal Save As dialog; other browsers download the file.
+
+**Crop & Trim tab** (right panel): pick a crop shape and drag the frame on the preview, then switch to another tab to see the result. For videos you can also set the start and end (type a time, or move the playhead and press *Start = playhead* / *End = playhead*), change the speed, add fades or remove the sound. Reset crop & rotation puts the picture back.
 
 **Batch tab**: copy the current settings to every opened photo, then export all of them as a ZIP (or straight into a folder in Chromium browsers).
 

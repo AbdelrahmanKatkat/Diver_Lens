@@ -46,6 +46,8 @@ const ICONS = {
   plus: 'M12 5v14M5 12h14',
   trash: 'M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13',
   film: 'M3 5h18v14H3zM8 5v14M16 5v14M3 10h5M3 14h5M16 10h5M16 14h5',
+  rotl: 'M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5', rotr: 'M21 12a9 9 0 1 1-3-6.7L21 8M21 3v5h-5',
+  flipH: 'M12 3v18M9 7l-5 5 5 5zM15 7l5 5-5 5z', flipV: 'M3 12h18M7 9l5-5 5 5zM7 15l5 5 5-5z',
 };
 function setIcon(svg, name) { svg.setAttribute('viewBox', '0 0 24 24'); svg.innerHTML = `<path d="${ICONS[name] || ''}"/>`; svg.dataset.i = name; }
 const hydrateIcons = (root = document) => $$('svg[data-i]', root).forEach((s) => setIcon(s, s.dataset.i));
@@ -71,6 +73,38 @@ const S = {
   work: null, steps: { imported: false, corrected: false, compared: false, exported: false }, uid: 1, abort: false, quick: null, raf: 0,
 };
 const cur = () => S.items[S.cur];
+
+/* ---------------- geometry & clip edits (crop / rotate / flip / trim / speed / fades) ---------------- */
+const defaultEdit = () => ({ crop: { x: 0, y: 0, w: 1, h: 1 }, rot: 0, fx: false, fy: false, aspect: 'free', tIn: 0, tOut: null, speed: 1, fadeIn: 0, fadeOut: 0, mute: false });
+const normRot = (r) => ((Math.round(r / 90) * 90) % 360 + 360) % 360;
+const isIdentity = (e) => e.crop.x < 1e-4 && e.crop.y < 1e-4 && e.crop.w > 0.9999 && e.crop.h > 0.9999 && !normRot(e.rot) && !e.fx && !e.fy;
+const geoKey = (e) => `${e.crop.x.toFixed(4)},${e.crop.y.toFixed(4)},${e.crop.w.toFixed(4)},${e.crop.h.toFixed(4)},${normRot(e.rot)},${+e.fx},${+e.fy}`;
+// rotated (uncropped) size rw x rh and cropped output size ow x oh for a source of sw x sh
+function outDims(e, sw, sh) {
+  const swap = normRot(e.rot) % 180 !== 0, rw = swap ? sh : sw, rh = swap ? sw : sh;
+  return { rw, rh, ow: Math.max(2, Math.round(e.crop.w * rw)), oh: Math.max(2, Math.round(e.crop.h * rh)) };
+}
+// draw `src` (sw x sh) onto ctx (ow x oh) with rotation, flip (applied after rotation) and crop
+function drawGeo(ctx, src, sw, sh, e, ow, oh) {
+  const { rw, rh } = outDims(e, sw, sh);
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, ow, oh);
+  ctx.imageSmoothingQuality = 'high';
+  ctx.scale(ow / (e.crop.w * rw), oh / (e.crop.h * rh));
+  ctx.translate(-e.crop.x * rw, -e.crop.y * rh);
+  ctx.translate(rw / 2, rh / 2);
+  ctx.scale(e.fx ? -1 : 1, e.fy ? -1 : 1);
+  ctx.rotate(normRot(e.rot) * Math.PI / 180);
+  ctx.drawImage(src, -sw / 2, -sh / 2, sw, sh);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+}
+const trimOf = (it) => { const a = it.edit.tIn || 0, b = Math.min(it.duration || 0, it.edit.tOut == null ? it.duration : it.edit.tOut); return { a, b: Math.max(a + 0.05, b) }; };
+// 0..1 brightness factor for fade in / out at output time t of a clip D seconds long
+const fadeAt = (e, t, D) => Math.max(0, Math.min(1, e.fadeIn > 0 ? t / e.fadeIn : 1, e.fadeOut > 0 ? (D - t) / e.fadeOut : 1));
+// size to process at: about `base` px on the long edge of the *output*, at most `cap` px on the source
+function procDims(it, e, base, cap) {
+  const d = outDims(e, it.w, it.h), sc = Math.min(1, base / Math.max(d.ow, d.oh), cap / Math.max(it.w, it.h));
+  return { w: Math.max(2, Math.round(it.w * sc)), h: Math.max(2, Math.round(it.h * sc)) };
+}
 
 /* ---------------- elements ---------------- */
 const stage = $('#stage'), cmp = $('#cmp'), cB = $('#cBefore'), cA = $('#cAfter');
@@ -106,7 +140,7 @@ async function loadImageItem(src, name, extra = {}) {
   img.decoding = 'async';
   img.src = src;
   await img.decode();
-  return { id: S.uid++, kind: 'image', name, url: src, thumb: src, el: img, w: img.naturalWidth, h: img.naturalHeight, params: E.defaultParams(), edited: false, ...extra };
+  return { id: S.uid++, kind: 'image', name, url: src, thumb: src, el: img, w: img.naturalWidth, h: img.naturalHeight, params: E.defaultParams(), edit: defaultEdit(), edited: false, ...extra };
 }
 async function loadVideoItem(src, name) {
   const v = document.createElement('video');
@@ -114,7 +148,7 @@ async function loadVideoItem(src, name) {
   Object.assign(v.style, { position: 'fixed', left: '-9999px', width: '2px', height: '2px', opacity: '0', pointerEvents: 'none' });
   document.body.appendChild(v);
   await once(v, 'loadeddata');
-  const item = { id: S.uid++, kind: 'video', name, url: src, el: v, w: v.videoWidth, h: v.videoHeight, duration: v.duration, params: E.defaultParams(), edited: false };
+  const item = { id: S.uid++, kind: 'video', name, url: src, el: v, w: v.videoWidth, h: v.videoHeight, duration: v.duration, params: E.defaultParams(), edit: defaultEdit(), edited: false };
   // thumbnail + statistics from a representative frame
   v.currentTime = Math.min(1, (v.duration || 1) * 0.1);
   await once(v, 'seeked');
@@ -127,7 +161,7 @@ async function loadVideoItem(src, name) {
   t.getContext('2d').drawImage(v, 0, 0, t.width, t.height);
   item.thumb = t.toDataURL('image/jpeg', 0.7);
   v.currentTime = 0;
-  v.addEventListener('timeupdate', () => { if (cur() === item) updateTime(); });
+  v.addEventListener('timeupdate', () => { if (cur() === item) { if (!v.paused && v.currentTime >= trimOf(item).b) v.pause(); updateTime(); } });
   v.addEventListener('seeked', () => { if (cur() === item) { drawVideoFrame(); updateTime(); } });
   v.addEventListener('play', () => { if (cur() === item) { setIcon($('svg', playBtn), 'pause'); videoLoop(); } });
   v.addEventListener('pause', () => { if (cur() === item) setIcon($('svg', playBtn), 'play'); });
@@ -180,25 +214,32 @@ async function selectItem(i) {
   $('#empty').hidden = true; cmp.hidden = false;
   busy('Preparing…');
   await new Promise((r) => setTimeout(r, 15));
+  const mid = document.createElement('canvas'), midx = mid.getContext('2d');   // CPU-path result before crop / rotate
   if (it.kind === 'image') {
     S.work = prepare(it);
-    cB.width = cA.width = S.work.w; cB.height = cA.height = S.work.h;
-    xB.putImageData(S.work.id, 0, 0);
+    mid.width = S.work.w; mid.height = S.work.h; Object.assign(S.work, { mid, midx });
   } else {
     const sc = Math.min(1, WORK_VID / Math.max(it.w, it.h)), w = Math.round(it.w * sc), h = Math.round(it.h * sc);
     const c = document.createElement('canvas'); c.width = w; c.height = h;
     const x = c.getContext('2d', { willReadFrequently: true });
-    S.work = { w, h, c, x, out: x.createImageData(w, h) };
-    cB.width = cA.width = w; cB.height = cA.height = h;
+    mid.width = w; mid.height = h;
+    S.work = { w, h, c, x, out: x.createImageData(w, h), mid, midx };
   }
+  S.beforeKey = '';
   if (!it.inited) { it.inited = true; it.params = Object.assign(E.neutralParams(), E.autoParams(it.st)); }
   busy();
   $('#playbar').classList.toggle('photo', it.kind === 'image');
   setIcon($('svg', playBtn), 'play');
+  if (it.kind === 'video') applyVideoPrefs(it);
   setIcon($('#muteBtn svg'), it.kind === 'video' && it.el.muted ? 'mute' : 'volume');
   updateTime();
-  fit(); syncUI(); renderFilm(); render();
+  syncUI(); renderFilm(); updateCropMode(true); render(); fit();
   $('#exName').textContent = it.name;
+}
+function applyVideoPrefs(it) {
+  const v = it.el; v.playbackRate = it.edit.speed || 1;
+  try { v.preservesPitch = false; v.mozPreservesPitch = false; v.webkitPreservesPitch = false; } catch (e) {}   // matches the exported audio
+  v.muted = !!(it.edit.mute || it.userMuted);
 }
 
 function requestRender() { if (S.raf) return; S.raf = requestAnimationFrame(() => { S.raf = 0; render(); }); }
@@ -209,41 +250,62 @@ function render() {
   const it = cur(); if (!it || !S.work) return;
   if (it.kind === 'video') { drawVideoFrame(); return; }
   if (!S.work.src) return;
-  const { w, h, src, out } = S.work;
+  const { w, h, src, out } = S.work, e = geoOf(it);
   const g = getGL();
   if (g) {
     try {
+      const pd = procDims(it, e, WORK_IMG, 3000);
       if (g.srcItem !== it) { g.upload(it.el); g.srcItem = it; }
-      g.setSize(w, h); g.render(it.params, it.st, E.getLevels(it.params, it.st, src, w, h));
-      xA.drawImage(g.canvas, 0, 0); return;
-    } catch (e) { console.warn('GPU render failed, using CPU', e); glr = null; }
+      g.setSize(pd.w, pd.h); g.render(it.params, it.st, E.getLevels(it.params, it.st, src, w, h));
+      present(it, g.canvas, pd.w, pd.h, e); return;
+    } catch (err) { console.warn('GPU render failed, using CPU', err); glr = null; }
   }
   E.process(src, out.data, w, h, it.params, it.st);
-  xA.putImageData(out, 0, 0);
+  S.work.midx.putImageData(out, 0, 0);
+  present(it, S.work.mid, w, h, e);
+}
+// the picture being edited: while the Crop tab is open the whole (rotated) frame is shown so the crop frame can be dragged on it
+const geoOf = (it) => (S.cropMode && it === cur() ? { ...it.edit, crop: { x: 0, y: 0, w: 1, h: 1 } } : it.edit);
+// put a processed frame on the preview canvases (cropped / rotated / flipped); "before" is the untouched original through the same geometry
+function present(it, pcv, sw, sh, e) {
+  const o = outDims(e, sw, sh);
+  if (cA.width !== o.ow || cA.height !== o.oh) { cA.width = cB.width = o.ow; cA.height = cB.height = o.oh; S.beforeKey = ''; fit(); }
+  drawGeo(xA, pcv, sw, sh, e, o.ow, o.oh);
+  if (it.kind === 'video') drawGeo(xB, it.el, it.w, it.h, e, o.ow, o.oh);
+  else { const k = it.id + '|' + geoKey(e) + '|' + o.ow; if (S.beforeKey !== k) { drawGeo(xB, it.el, it.w, it.h, e, o.ow, o.oh); S.beforeKey = k; } }
 }
 function drawVideoFrame() {
   const it = cur(); if (!it || it.kind !== 'video' || !S.work || !S.work.x) return;
-  const { w, h, x, out } = S.work;
+  const { w, h, x, out } = S.work, e = geoOf(it);
   if (it.el.readyState < 2) return;
   const g = getGL();
+  let ok = false;
   if (g) {
     try {
-      g.setSize(w, h); g.upload(it.el); g.srcItem = it;
+      const pd = procDims(it, e, WORK_VID, 2000);
+      g.setSize(pd.w, pd.h); g.upload(it.el); g.srcItem = it;
       g.render(it.params, it.st, E.getLevels(it.params, it.st, null, 0, 0));
-      xA.drawImage(g.canvas, 0, 0); xB.drawImage(it.el, 0, 0, w, h); return;
-    } catch (e) { console.warn('GPU render failed, using CPU', e); glr = null; }
+      present(it, g.canvas, pd.w, pd.h, e); ok = true;
+    } catch (err) { console.warn('GPU render failed, using CPU', err); glr = null; }
   }
-  x.drawImage(it.el, 0, 0, w, h);
-  xB.drawImage(S.work.c, 0, 0);
-  const id = x.getImageData(0, 0, w, h);
-  E.process(id.data, out.data, w, h, it.params, it.st);
-  xA.putImageData(out, 0, 0);
+  if (!ok) {
+    x.drawImage(it.el, 0, 0, w, h);
+    const id = x.getImageData(0, 0, w, h);
+    E.process(id.data, out.data, w, h, it.params, it.st);
+    S.work.midx.putImageData(out, 0, 0);
+    present(it, S.work.mid, w, h, e);
+  }
+  if (!S.cropMode && (it.edit.fadeIn > 0 || it.edit.fadeOut > 0)) {   // preview the fades
+    const t = Math.max(0, (it.el.currentTime - it.edit.tIn) / it.edit.speed), tb = trimOf(it), f = fadeAt(it.edit, t, (tb.b - tb.a) / it.edit.speed);
+    if (f < 1) { xA.fillStyle = `rgba(0,0,0,${1 - f})`; xA.fillRect(0, 0, cA.width, cA.height); }
+  }
 }
 function videoLoop() {
   const it = cur(); if (!it || it.kind !== 'video') return;
   const v = it.el;
   const step = () => {
     if (cur() !== it || v.paused || v.ended) return;
+    if (v.currentTime >= trimOf(it).b) { v.pause(); drawVideoFrame(); updateTime(); return; }
     drawVideoFrame();
     if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(step); else requestAnimationFrame(step);
   };
@@ -252,9 +314,9 @@ function videoLoop() {
 
 /* ---------------- stage layout / compare ---------------- */
 function fit() {
-  if (!S.work) return;
+  if (!S.work || !cA.width) return;
   const r = stage.getBoundingClientRect();
-  let ar = S.work.w / S.work.h; if (S.mode === 'side') ar *= 2;
+  let ar = cA.width / cA.height; if (S.mode === 'side' && !S.cropMode) ar *= 2;
   const pw = Math.max(50, r.width - 16), ph = Math.max(50, r.height - 16);
   let w = pw, h = w / ar; if (h > ph) { h = ph; w = h * ar; }
   cmp.style.width = w + 'px'; cmp.style.height = h + 'px';
@@ -281,12 +343,18 @@ const fmt = (t) => { t = Math.max(0, t || 0); return `${Math.floor(t / 60)}:${St
 function updateTime() {
   const it = cur();
   if (!it || it.kind !== 'video') { timeTxt.textContent = 'Photo'; seek.value = 0; seek.style.setProperty('--v', '0%'); return; }
-  timeTxt.textContent = `${fmt(it.el.currentTime)} / ${fmt(it.el.duration)}`;
-  const v = (it.el.currentTime / (it.el.duration || 1)) * 1000; seek.value = v; seek.style.setProperty('--v', v / 10 + '%');
+  const { a, b } = trimOf(it), rel = clamp(it.el.currentTime - a, 0, b - a), sp = it.edit.speed || 1;   // the bar shows the trimmed clip
+  timeTxt.textContent = `${fmt(rel / sp)} / ${fmt((b - a) / sp)}`;
+  const v = (rel / (b - a)) * 1000; seek.value = v; seek.style.setProperty('--v', v / 10 + '%');
 }
-playBtn.onclick = () => { const it = cur(); if (it && it.kind === 'video') it.el.paused ? it.el.play() : it.el.pause(); };
-seek.oninput = () => { const it = cur(); if (it && it.kind === 'video') it.el.currentTime = (seek.value / 1000) * it.el.duration; };
-$('#muteBtn').onclick = () => { const it = cur(); if (it && it.kind === 'video') { it.el.muted = !it.el.muted; setIcon($('#muteBtn svg'), it.el.muted ? 'mute' : 'volume'); } };
+playBtn.onclick = () => {
+  const it = cur(); if (!it || it.kind !== 'video') return;
+  if (!it.el.paused) { it.el.pause(); return; }
+  const { a, b } = trimOf(it); if (it.el.currentTime >= b - 0.05 || it.el.currentTime < a - 0.05) it.el.currentTime = a;
+  it.el.play();
+};
+seek.oninput = () => { const it = cur(); if (it && it.kind === 'video') { const { a, b } = trimOf(it); it.el.currentTime = a + (seek.value / 1000) * (b - a); } };
+$('#muteBtn').onclick = () => { const it = cur(); if (it && it.kind === 'video') { it.userMuted = !it.userMuted; applyVideoPrefs(it); setIcon($('#muteBtn svg'), it.el.muted ? 'mute' : 'volume'); } };
 $('#fsBtn').onclick = () => { if (document.fullscreenElement) document.exitFullscreen(); else if (stage.requestFullscreen) stage.requestFullscreen(); };
 document.addEventListener('fullscreenchange', () => setTimeout(fit, 50));
 
@@ -363,12 +431,13 @@ function slider(def, get, set, container) {
   const id = 'sl_' + Math.random().toString(36).slice(2, 8);
   row.innerHTML = `<label for="${id}" title="Double-click to reset">${def.l}</label><input id="${id}" type="range" min="${def.min}" max="${def.max}" step="${def.step || 1}"><input type="text" inputmode="decimal" aria-label="${def.l} value">`;
   const [lab, rng, num] = [row.children[0], row.children[1], row.children[2]];
+  const mx = () => (typeof def.max === 'function' ? def.max() : def.max), sv = (v) => (def.fmt ? def.fmt(v) : showVal(v, def.dec));
   if (def.tr) rng.style.setProperty('--tr', def.tr);
-  rng.oninput = () => { const v = +rng.value; num.value = showVal(v, def.dec); set(v); };
-  num.onchange = () => { const v = clamp(parseFloat(num.value) || 0, def.min, def.max); rng.value = v; num.value = showVal(v, def.dec); set(v); };
-  lab.ondblclick = () => { const v = def.min < 0 ? 0 : (E.neutralParams()[def.k] ?? 0); rng.value = v; num.value = showVal(v, def.dec); set(v); };
+  rng.oninput = () => { const v = +rng.value; num.value = sv(v); set(v); };
+  num.onchange = () => { const v = clamp(parseFloat(num.value) || 0, def.min, mx()); rng.value = v; num.value = sv(v); set(v); };
+  lab.ondblclick = () => { const v = def.reset !== undefined ? (typeof def.reset === 'function' ? def.reset() : def.reset) : def.min < 0 ? 0 : (E.neutralParams()[def.k] ?? 0); rng.value = v; num.value = sv(v); set(v); };
   container.appendChild(row);
-  return () => { const v = get(); rng.value = v; num.value = showVal(v, def.dec); };
+  return () => { rng.max = mx(); const v = get(); rng.value = v; num.value = sv(v); };
 }
 function paramSet(k) { return (v) => { cur().params[k] = v; changed(); }; }
 function changed() {
@@ -493,6 +562,106 @@ function syncUI() {
   syncHSL(); drawCurve();
 }
 
+/* ---------------- crop / rotate / flip, trim / speed / fades ---------------- */
+const cropUI = $('#cropUI'), cropRect = $('#cropRect');
+function updateCropMode(noRender) {
+  const on = S.rt === 'crop' && !!cur();
+  const was = !!S.cropMode; S.cropMode = on;
+  cmp.classList.toggle('cropping', on); cropUI.hidden = !on;
+  if (on) placeCrop();
+  if (was !== on && !noRender) { S.beforeKey = ''; render(); fit(); }
+}
+function placeCrop() {
+  const it = cur(); if (!it) return;
+  const c = it.edit.crop, d = outDims(it.edit, it.w, it.h);
+  Object.assign(cropRect.style, { left: c.x * 100 + '%', top: c.y * 100 + '%', width: c.w * 100 + '%', height: c.h * 100 + '%' });
+  $('#cropInfo').textContent = `Output: ${Math.round(c.w * d.rw)} × ${Math.round(c.h * d.rh)} px`;
+}
+const aspectVal = (e, rw, rh) => (e.aspect === 'free' ? null : e.aspect === 'orig' ? rw / rh : +e.aspect);
+function editTouched() { const it = cur(); it.edited = true; markStep('corrected'); updateCounts(); }
+function setCrop(c) { cur().edit.crop = c; placeCrop(); editTouched(); }
+function computeCrop(c, h, dx, dy) {
+  const it = cur(), e = it.edit, { rw, rh } = outDims(e, it.w, it.h), MIN = 0.04, A = aspectVal(e, rw, rh);
+  if (h === 'move') return { x: clamp(c.x + dx, 0, 1 - c.w), y: clamp(c.y + dy, 0, 1 - c.h), w: c.w, h: c.h };
+  let l = c.x, t = c.y, r = c.x + c.w, b = c.y + c.h;
+  if (h.includes('w')) l = clamp(c.x + dx, 0, r - MIN);
+  if (h.includes('e')) r = clamp(c.x + c.w + dx, l + MIN, 1);
+  if (h.includes('n')) t = clamp(c.y + dy, 0, b - MIN);
+  if (h.includes('s')) b = clamp(c.y + c.h + dy, t + MIN, 1);
+  if (A) {   // keep the chosen aspect ratio
+    const q = A * rh / rw, H = /[we]/.test(h), V = /[ns]/.test(h), gx = h.includes('w') ? -1 : 1, gy = h.includes('n') ? -1 : 1;
+    const ax = gx < 0 ? r : l, ay = gy < 0 ? b : t, cx = (l + r) / 2, cy = (t + b) / 2;
+    let w = r - l, hh = b - t;
+    if (V && !H) w = hh * q; else hh = w / q;
+    const maxW = H ? (gx < 0 ? ax : 1 - ax) : 2 * Math.min(cx, 1 - cx), maxH = V ? (gy < 0 ? ay : 1 - ay) : 2 * Math.min(cy, 1 - cy);
+    w = Math.max(MIN, Math.min(w, maxW, maxH * q)); hh = w / q;
+    if (H) { if (gx < 0) { r = ax; l = ax - w; } else { l = ax; r = ax + w; } } else { l = cx - w / 2; r = cx + w / 2; }
+    if (V) { if (gy < 0) { b = ay; t = ay - hh; } else { t = ay; b = ay + hh; } } else { t = cy - hh / 2; b = cy + hh / 2; }
+  }
+  return { x: l, y: t, w: r - l, h: b - t };
+}
+let cd = null;
+cropUI.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+cropRect.addEventListener('pointerdown', (ev) => {
+  const it = cur(); if (!it) return;
+  cd = { h: ev.target.dataset.h || 'move', x: ev.clientX, y: ev.clientY, r: cmp.getBoundingClientRect(), c: { ...it.edit.crop } };
+  cropRect.setPointerCapture(ev.pointerId); ev.preventDefault();
+});
+cropRect.addEventListener('pointermove', (ev) => { if (cd) setCrop(computeCrop(cd.c, cd.h, (ev.clientX - cd.x) / cd.r.width, (ev.clientY - cd.y) / cd.r.height)); });
+['pointerup', 'pointercancel'].forEach((n) => cropRect.addEventListener(n, () => (cd = null)));
+function applyAspect() {   // fit the chosen ratio inside the current crop, around its centre
+  const it = cur(); if (!it) return;
+  const e = it.edit, c = e.crop, { rw, rh } = outDims(e, it.w, it.h), A = aspectVal(e, rw, rh);
+  if (A) {
+    let wp = c.w * rw, hp = c.h * rh; if (wp / hp > A) wp = hp * A; else hp = wp / A;
+    const w = wp / rw, h = hp / rh, cx = c.x + c.w / 2, cy = c.y + c.h / 2;
+    setCrop({ x: clamp(cx - w / 2, 0, 1 - w), y: clamp(cy - h / 2, 0, 1 - h), w, h });
+  }
+  refs.e_misc();
+}
+function geoChanged() { const it = cur(); S.beforeKey = ''; placeCrop(); editTouched(); render(); fit(); }
+function rotate(dir) {   // the picture turns, flips swap axes, and the crop frame turns with it
+  const it = cur(); if (!it) return; const e = it.edit, c = e.crop;
+  e.rot = normRot(e.rot + dir * 90); [e.fx, e.fy] = [e.fy, e.fx];
+  e.crop = dir > 0 ? { x: 1 - (c.y + c.h), y: c.x, w: c.h, h: c.w } : { x: c.y, y: 1 - (c.x + c.w), w: c.h, h: c.w };
+  geoChanged();
+}
+function flip(axis) {
+  const it = cur(); if (!it) return; const e = it.edit, c = e.crop;
+  if (axis === 'x') { e.fx = !e.fx; e.crop = { ...c, x: 1 - (c.x + c.w) }; } else { e.fy = !e.fy; e.crop = { ...c, y: 1 - (c.y + c.h) }; }
+  geoChanged();
+}
+function buildEditUI() {
+  $$('#aspSeg button').forEach((b) => (b.onclick = () => { const it = cur(); if (!it) return; const a = b.dataset.a; it.edit.aspect = a === 'free' || a === 'orig' ? a : +a; applyAspect(); }));
+  $('#rotL').onclick = () => rotate(-1); $('#rotR').onclick = () => rotate(1);
+  $('#flipH').onclick = () => flip('x'); $('#flipV').onclick = () => flip('y');
+  $('#cropReset').onclick = () => { const it = cur(); if (!it) return; const e = it.edit; Object.assign(e, { crop: { x: 0, y: 0, w: 1, h: 1 }, rot: 0, fx: false, fy: false, aspect: 'free' }); refs.e_misc(); geoChanged(); };
+  const dur = () => (cur() && cur().duration) || 1, E_ = () => cur().edit;
+  const tgo = (t) => { const it = cur(); it.el.currentTime = t; };
+  const trimChanged = () => { editTouched(); updateTime(); };
+  refs.e_tIn = slider({ k: 'tIn', l: 'Start', min: 0, max: dur, step: 0.01, fmt: (v) => v.toFixed(2), reset: 0 },
+    () => E_().tIn || 0,
+    (v) => { const e = E_(), end = e.tOut == null ? dur() : e.tOut; e.tIn = Math.min(v, end - 0.1); refs.e_tIn(); tgo(e.tIn); trimChanged(); }, $('#sl-trim'));
+  refs.e_tOut = slider({ k: 'tOut', l: 'End', min: 0, max: dur, step: 0.01, fmt: (v) => v.toFixed(2), reset: dur },
+    () => (E_().tOut == null ? dur() : E_().tOut),
+    (v) => { const e = E_(); e.tOut = Math.max(v, e.tIn + 0.1); if (e.tOut >= dur() - 0.005) e.tOut = null; refs.e_tOut(); tgo(Math.max(e.tIn, (e.tOut == null ? dur() : e.tOut) - 0.05)); trimChanged(); }, $('#sl-trim'));
+  $('#setIn').onclick = () => { const it = cur(), e = it.edit, t = Math.min(it.el.currentTime, (e.tOut == null ? dur() : e.tOut) - 0.1); e.tIn = Math.max(0, t); refs.e_tIn(); trimChanged(); };
+  $('#setOut').onclick = () => { const it = cur(), e = it.edit, t = Math.max(it.el.currentTime, e.tIn + 0.1); e.tOut = t >= dur() - 0.005 ? null : t; refs.e_tOut(); trimChanged(); };
+  refs.e_fi = slider({ k: 'fadeIn', l: 'Fade in', min: 0, max: 3, step: 0.1, fmt: (v) => v.toFixed(1), reset: 0 }, () => E_().fadeIn, (v) => { E_().fadeIn = v; editTouched(); drawVideoFrame(); }, $('#sl-fade'));
+  refs.e_fo = slider({ k: 'fadeOut', l: 'Fade out', min: 0, max: 3, step: 0.1, fmt: (v) => v.toFixed(1), reset: 0 }, () => E_().fadeOut, (v) => { E_().fadeOut = v; editTouched(); drawVideoFrame(); }, $('#sl-fade'));
+  $$('#spdSeg button').forEach((b) => (b.onclick = () => { const it = cur(); if (!it) return; it.edit.speed = +b.dataset.s; applyVideoPrefs(it); refs.e_misc(); editTouched(); updateTime(); }));
+  const swm = $('#swMute'), flipMute = () => { const it = cur(); if (!it) return; it.edit.mute = !it.edit.mute; applyVideoPrefs(it); refs.e_misc(); editTouched(); setIcon($('#muteBtn svg'), it.el.muted ? 'mute' : 'volume'); };
+  swm.onclick = flipMute; $('#tgMute').onclick = (ev) => { if (ev.target !== swm) flipMute(); };
+  refs.e_misc = () => {
+    const it = cur(); if (!it) return; const e = it.edit;
+    $('#vidEdit').hidden = it.kind !== 'video';
+    $$('#aspSeg button').forEach((b) => b.classList.toggle('on', b.dataset.a === String(e.aspect)));
+    $$('#spdSeg button').forEach((b) => b.classList.toggle('on', +b.dataset.s === e.speed));
+    swm.setAttribute('aria-checked', !!e.mute);
+    if (S.cropMode) placeCrop();
+  };
+}
+
 /* ---------------- quick actions & presets ---------------- */
 const QUICK = [
   { n: 'Auto Enhance', i: 'wand', f: (it) => ({ ...E.neutralParams(), ...E.autoParams(it.st) }) },
@@ -563,7 +732,8 @@ $('#resetBtn').onclick = () => { const it = cur(); if (!it) return; it.params = 
 /* right-hand tabs */
 $$('#rtabs button').forEach((b) => (b.onclick = () => {
   S.rt = b.dataset.rt; $$('#rtabs button').forEach((x) => x.classList.toggle('on', x === b));
-  ['cc', 'adv', 'pre'].forEach((k) => ($('#rt-' + k).hidden = k !== S.rt));
+  ['cc', 'adv', 'pre', 'crop'].forEach((k) => ($('#rt-' + k).hidden = k !== S.rt));
+  updateCropMode();
 }));
 
 /* ---------------- workflow steps ---------------- */
@@ -613,16 +783,18 @@ const EXT = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' };
 
 async function renderFull(item, maxSide) {
   const wk = prepare(item);   // fresh statistics + working-resolution data (levels are measured from this)
-  const cap = Math.min(maxSide || 8192, 8192), sc = Math.min(1, cap / Math.max(item.w, item.h));
-  const w = Math.max(1, Math.round(item.w * sc)), h = Math.max(1, Math.round(item.h * sc));
+  const ed = item.edit, full = outDims(ed, item.w, item.h);
+  // the size limit applies to the cropped result; the uncropped source is processed at most 8192 px wide
+  const sc = Math.min(1, Math.min(maxSide || 8192, 8192) / Math.max(full.ow, full.oh), 8192 / Math.max(item.w, item.h));
+  const w = Math.max(2, Math.round(item.w * sc)), h = Math.max(2, Math.round(item.h * sc)), o = outDims(ed, w, h);
+  const res = document.createElement('canvas'); res.width = o.ow; res.height = o.oh;
   const gx = getExportGL();
   if (gx) {
     try {
       gx.setSize(w, h); gx.upload(item.el); gx.srcItem = item;
       gx.render(item.params, item.st, E.getLevels(item.params, item.st, wk.src, wk.w, wk.h));
-      const c2 = document.createElement('canvas'); c2.width = gx.canvas.width; c2.height = gx.canvas.height;
-      c2.getContext('2d').drawImage(gx.canvas, 0, 0); gx.setSize(16, 16);
-      return c2;
+      drawGeo(res.getContext('2d'), gx.canvas, w, h, ed, o.ow, o.oh); gx.setSize(16, 16);
+      return res;
     } catch (e) { console.warn('GPU export failed, using CPU', e); glx = null; }
   }
   const c = document.createElement('canvas'); c.width = w; c.height = h;
@@ -631,7 +803,8 @@ async function renderFull(item, maxSide) {
   const id = x.getImageData(0, 0, w, h), out = x.createImageData(w, h);
   E.process(id.data, out.data, w, h, item.params, item.st);
   x.putImageData(out, 0, 0);
-  return c;
+  drawGeo(res.getContext('2d'), c, w, h, ed, o.ow, o.oh);
+  return res;
 }
 async function encodeImage(item, fmtType, q, maxSide) {
   const c = await renderFull(item, maxSide);
@@ -643,31 +816,43 @@ async function exportVideoRealtime(item, prog) {
   if (!window.MediaRecorder) throw new Error('This browser cannot record video. Try Chrome, Edge or Firefox.');
   const v = document.createElement('video'); v.playsInline = true; v.preload = 'auto'; v.src = item.url;
   await once(v, 'loadeddata');
-  const sc = Math.min(1, WORK_VID / Math.max(item.w, item.h)), w = Math.round(item.w * sc) & ~1, h = Math.round(item.h * sc) & ~1;
-  const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
-  const x = cv.getContext('2d', { willReadFrequently: true }), out = x.createImageData(w, h);
+  const ed = item.edit, tIn = ed.tIn || 0, tOut = Math.min(v.duration, ed.tOut == null ? v.duration : ed.tOut), D = (tOut - tIn) / ed.speed;
+  const full = outDims(ed, item.w, item.h), sc = Math.min(1, WORK_VID / Math.max(full.ow, full.oh));
+  const sw = Math.max(2, Math.round(item.w * sc)), sh = Math.max(2, Math.round(item.h * sc)), od = outDims(ed, sw, sh), w = od.ow & ~1, h = od.oh & ~1;
+  const pc = document.createElement('canvas'); pc.width = sw; pc.height = sh;   // colour-corrected full frame
+  const x = pc.getContext('2d', { willReadFrequently: true }), out = x.createImageData(sw, sh);
+  const cv = document.createElement('canvas'); cv.width = w; cv.height = h;     // cropped / rotated result that gets recorded
+  const ox = cv.getContext('2d');
   const stream = cv.captureStream(30);
   let ac = null;
   try {
+    if (ed.mute) throw 0;
     ac = new (window.AudioContext || window.webkitAudioContext)();
     const dest = ac.createMediaStreamDestination(); ac.createMediaElementSource(v).connect(dest);
     dest.stream.getAudioTracks().forEach((t) => stream.addTrack(t));
     await ac.resume();
   } catch (e) { /* video without audio is still fine */ }
+  v.currentTime = tIn; if (Math.abs(v.currentTime - tIn) > 1e-3) await once(v, 'seeked');
+  v.playbackRate = ed.speed; try { v.preservesPitch = false; } catch (e) {}
   const mime = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'].find((m) => MediaRecorder.isTypeSupported(m));
   const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 8e6 }), chunks = [];
   rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
   const done = new Promise((res) => (rec.onstop = () => res(new Blob(chunks, { type: 'video/webm' }))));
+  const finish = () => setTimeout(() => rec.state !== 'inactive' && rec.stop(), 150);
   const frame = () => {
-    x.drawImage(v, 0, 0, w, h);
-    const id = x.getImageData(0, 0, w, h);
-    E.process(id.data, out.data, w, h, item.params, item.st);
+    x.drawImage(v, 0, 0, sw, sh);
+    const id = x.getImageData(0, 0, sw, sh);
+    E.process(id.data, out.data, sw, sh, item.params, item.st);
     x.putImageData(out, 0, 0);
-    prog(v.currentTime / (v.duration || 1));
+    drawGeo(ox, pc, sw, sh, ed, w, h);
+    const f = fadeAt(ed, Math.max(0, (v.currentTime - tIn) / ed.speed), D);
+    if (f < 1) { ox.fillStyle = `rgba(0,0,0,${1 - f})`; ox.fillRect(0, 0, w, h); }
+    prog(clamp((v.currentTime - tIn) / Math.max(0.001, tOut - tIn), 0, 1));
     if (S.abort) { v.pause(); rec.state !== 'inactive' && rec.stop(); return; }
+    if (v.currentTime >= tOut - 0.001) { v.pause(); finish(); return; }
     if (!v.ended) (v.requestVideoFrameCallback ? v.requestVideoFrameCallback(frame) : requestAnimationFrame(frame));
   };
-  v.onended = () => setTimeout(() => rec.state !== 'inactive' && rec.stop(), 150);
+  v.onended = finish;
   rec.start(250); await v.play(); frame();
   const blob = await done;
   if (ac) ac.close();
@@ -698,10 +883,18 @@ async function exportVideoMP4(item, prog) {
   const v = document.createElement('video'); v.muted = true; v.playsInline = true; v.preload = 'auto'; v.src = item.url;
   await once(v, 'loadeddata');
   const dur = v.duration, fps = clamp(Math.round(await detectFps(v)), 1, 30);
-  const sc = Math.min(1, maxSide / Math.max(item.w, item.h)), w = Math.round(item.w * sc) & ~1, h = Math.round(item.h * sc) & ~1;
+  const ed = item.edit, tIn = clamp(ed.tIn || 0, 0, dur), tOut = Math.min(dur, ed.tOut == null ? dur : ed.tOut), speed = ed.speed || 1, D = Math.max(0.1, (tOut - tIn) / speed);
+  // the resolution setting limits the cropped result; frames are rendered at the scaled full size, then cropped / rotated
+  const full = outDims(ed, item.w, item.h), sc = Math.min(1, maxSide / Math.max(full.ow, full.oh));
+  const plain = isIdentity(ed) && !(ed.fadeIn > 0) && !(ed.fadeOut > 0);   // nothing to do after the colour pass
+  let sw = Math.max(2, Math.round(item.w * sc)), sh = Math.max(2, Math.round(item.h * sc));
+  if (plain) { sw &= ~1; sh &= ~1; }
+  const od = outDims(ed, sw, sh), w = Math.max(2, od.ow & ~1), h = Math.max(2, od.oh & ~1);
   const g = GLR.create(); if (!g) throw new Error('no GPU');
+  const oc = plain ? null : document.createElement('canvas'); if (oc) { oc.width = w; oc.height = h; }
+  const ocx = oc && oc.getContext('2d');
   try {
-    g.setSize(w, h);
+    g.setSize(sw, sh);
     const bitrate = Math.round(clamp(w * h * fps * bpp, 2e6, 80e6)), big = w * h > 1920 * 1088;
     let cfg = null;
     for (const k of [{ c: 'avc1.' + (big ? '640033' : '640028'), m: 'avc' }, { c: 'avc1.4d0028', m: 'avc' }, { c: 'vp09.00.40.08', m: 'vp9' }]) {
@@ -711,7 +904,7 @@ async function exportVideoMP4(item, prog) {
 
     // audio: decode locally, re-encode as AAC (the picture changes, the sound is kept)
     let audio = null;
-    if (window.AudioEncoder) {
+    if (window.AudioEncoder && !ed.mute) {
       try {
         const ac = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
         const buf = await ac.decodeAudioData(await (await fetch(item.url)).arrayBuffer()); ac.close();
@@ -729,10 +922,18 @@ async function exportVideoMP4(item, prog) {
     if (audio) {
       const aenc = new AudioEncoder({ output: (c, m) => mux.addAudioChunk(c, m), error: (e) => (encErr = e) });
       aenc.configure({ codec: audio.k.c, sampleRate: 48000, numberOfChannels: audio.ch, bitrate: 160000 });
-      const total = Math.min(audio.buf.length, Math.round(dur * 48000)), CH = 48000;
+      const total = Math.round(D * 48000), CH = 48000, sr = audio.buf.sampleRate;
       for (let off = 0; off < total; off += CH) {
+        // trim + speed: read the source at tIn + t * speed (linear interpolation), apply the fades
         const n = Math.min(CH, total - off), data = new Float32Array(n * audio.ch);
-        for (let c = 0; c < audio.ch; c++) data.set(audio.buf.getChannelData(c).subarray(off, off + n), c * n);
+        for (let c = 0; c < audio.ch; c++) {
+          const sd = audio.buf.getChannelData(c);
+          for (let k = 0; k < n; k++) {
+            const t = (off + k) / 48000, pos = (tIn + t * speed) * sr, i0 = Math.floor(pos), fr = pos - i0;
+            const s0 = i0 < sd.length ? sd[i0] : 0, s1 = i0 + 1 < sd.length ? sd[i0 + 1] : s0;
+            data[c * n + k] = (s0 + (s1 - s0) * fr) * fadeAt(ed, t, D);
+          }
+        }
         const ad = new AudioData({ format: 'f32-planar', sampleRate: 48000, numberOfFrames: n, numberOfChannels: audio.ch, timestamp: Math.round(off / 48000 * 1e6), data });
         aenc.encode(ad); ad.close();
         if (aenc.encodeQueueSize > 20) await tick();
@@ -743,7 +944,7 @@ async function exportVideoMP4(item, prog) {
 
     const venc = new VideoEncoder({ output: (c, m) => mux.addVideoChunk(c, m), error: (e) => (encErr = e) });
     venc.configure(cfg.conf);
-    const N = Math.max(1, Math.floor(dur * fps)), dt = 1e6 / fps, t0 = performance.now();
+    const N = Math.max(1, Math.floor(D * fps)), dt = 1e6 / fps, t0 = performance.now();
     const seekTo = (t) => new Promise((res) => {
       if (Math.abs(v.currentTime - t) < 1e-4) return res();
       let done = false; const fin = () => { if (done) return; done = true; v.removeEventListener('seeked', fin); res(); };
@@ -754,12 +955,18 @@ async function exportVideoMP4(item, prog) {
       if (S.abort) throw new Error('cancelled');
       if (encErr) throw encErr;
       let m = now();
-      await seekTo(Math.min(dur - 0.001, i / fps + 0.25 / fps));
+      await seekTo(Math.min(dur - 0.001, tIn + (i + 0.25) / fps * speed));
       for (let k = 0; v.readyState < 2 && k < 200; k++) await tick();   // wait until the frame is really decodable
       T.seek += now() - m; m = now();
       g.upload(v);
       g.render(item.params, item.st, E.getLevels(item.params, item.st, null, 0, 0));
-      const fr = new VideoFrame(g.canvas, { timestamp: Math.round(i * dt), duration: Math.round(dt) }); T.gpu += now() - m; m = now();
+      let srcCv = g.canvas;
+      if (oc) {
+        drawGeo(ocx, g.canvas, sw, sh, ed, w, h);
+        const f = fadeAt(ed, i / fps, D); if (f < 1) { ocx.fillStyle = `rgba(0,0,0,${1 - f})`; ocx.fillRect(0, 0, w, h); }
+        srcCv = oc;
+      }
+      const fr = new VideoFrame(srcCv, { timestamp: Math.round(i * dt), duration: Math.round(dt) }); T.gpu += now() - m; m = now();
       venc.encode(fr, { keyFrame: i % (fps * 2) === 0 }); fr.close(); T.encode += now() - m; m = now();
       while (venc.encodeQueueSize > 8) await new Promise((r) => setTimeout(r, 4));
       T.wait += now() - m;
@@ -877,7 +1084,7 @@ $('#folderAll').onclick = () => batchExport(true);
 /* ---------------- projects ---------------- */
 $('#projectsBtn').onclick = () => $('#dlgProj').showModal();
 $('#projSave').onclick = async () => {
-  const data = { app: 'dive-colorlab', version: 1, items: S.items.map((i) => ({ name: i.name, kind: i.kind, w: i.w, h: i.h, params: i.params })), presets: userPresets() };
+  const data = { app: 'dive-colorlab', version: 1, items: S.items.map((i) => ({ name: i.name, kind: i.kind, w: i.w, h: i.h, params: i.params, edit: i.edit })), presets: userPresets() };
   await saveBlob(new Blob([JSON.stringify(data, null, 1)], { type: 'application/json' }), 'dive-colorlab-project.json', null);
   toast('Project file saved');
 };
@@ -886,9 +1093,9 @@ $('#projInput').onchange = async (e) => {
   const f = e.target.files[0]; e.target.value = ''; if (!f) return;
   try {
     const d = JSON.parse(await f.text()); if (d.app !== 'dive-colorlab') throw 0;
-    let n = 0; d.items.forEach((x) => { const m = S.items.find((i) => i.name === x.name && i.kind === x.kind); if (m) { m.params = Object.assign(E.neutralParams(), x.params); m.edited = true; n++; } });
+    let n = 0; d.items.forEach((x) => { const m = S.items.find((i) => i.name === x.name && i.kind === x.kind); if (m) { m.params = Object.assign(E.neutralParams(), x.params); if (x.edit && x.edit.crop) { m.edit = Object.assign(defaultEdit(), x.edit); if (m.kind === 'video') applyVideoPrefs(m); } m.edited = true; n++; } });
     if (Array.isArray(d.presets) && d.presets.length) { const l = userPresets(); d.presets.forEach((p) => !l.some((q) => q.name === p.name) && l.push(p)); safeLS.set('dcl.presets', l); renderPresets(); }
-    syncUI(); requestRender(); updateCounts(); $('#dlgProj').close(); toast(n ? `Settings restored for ${n} file(s)` : 'No matching files are open. Import the same files first.');
+    S.beforeKey = ''; syncUI(); updateCropMode(); requestRender(); updateCounts(); $('#dlgProj').close(); toast(n ? `Settings restored for ${n} file(s)` : 'No matching files are open. Import the same files first.');
   } catch (err) { toast('That is not a valid Dive ColorLab project file'); }
 };
 
@@ -910,7 +1117,7 @@ window.addEventListener('drop', (e) => { if (!hasFiles(e)) return; e.preventDefa
 if ('launchQueue' in window) window.launchQueue.setConsumer(async (p) => { const fs = []; for (const h of p.files || []) fs.push(await h.getFile()); addFiles(fs); });
 
 /* ---------------- boot ---------------- */
-buildControls(); buildWheels(); buildHSL(); buildQuick(); renderPresets(); updateCounts(); updateSteps();
+buildControls(); buildWheels(); buildHSL(); buildEditUI(); buildQuick(); renderPresets(); updateCounts(); updateSteps();
 (async function boot() {
   busy('Loading sample reef…');
   try {
