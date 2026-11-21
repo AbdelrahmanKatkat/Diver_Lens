@@ -20,7 +20,7 @@ const Engine = (() => {
     return {
       temp: 0, tint: 0, exposure: 0, contrast: 0, highlights: 0, shadows: 0, vibrance: 0, saturation: 0, clarity: 0, levels: 0, skin: true,
       cast: false, castAmt: 70, dehaze: false, dehazeAmt: 40, backscatter: false, backAmt: 35, noise: false, noiseAmt: 40,
-      depth: false, depthAmt: 60, depthRR: 4,
+      depth: false, depthAmt: 60, depthRR: 4, gainR: 0, gainG: 0, gainB: 0, redRecover: 0,
       curves: { rgb: [[0, 0], [1, 1]], r: [[0, 0], [1, 1]], g: [[0, 0], [1, 1]], b: [[0, 0], [1, 1]] },
       wheels: { shadows: { x: 0, y: 0, l: 0 }, mid: { x: 0, y: 0, l: 0 }, high: { x: 0, y: 0, l: 0 } },
       hsl,
@@ -158,6 +158,12 @@ const Engine = (() => {
     }
     if (opts.video) st.ref = { data, w, h };   // video: levels are measured once on this reference frame (no flicker)
     if (opts.video || n < 64) return st;
+    {   // smooth local red/green ratio: the colour that red recovery rebuilds red from (fine detail comes from green, so red noise is not amplified)
+      const rgm = new Float32Array(n);
+      for (let i = 0, j = 0; i < n; i++, j += 4) rgm[i] = Math.min(2, data[j] / (data[j + 1] + 3));
+      const rad = Math.max(4, Math.round(Math.max(w, h) / 60));
+      st.rg = boxBlur(boxBlur(rgm, w, h, rad), w, h, rad);
+    }
 
     // Underwater dark channel prior: only G and B (red is already absorbed), local minimum, refined with a guided filter
     const gb = new Float32Array(n), Y = new Float32Array(n);
@@ -215,7 +221,7 @@ const Engine = (() => {
     const a = p.cast ? clamp(p.castAmt / 100, 0, 1.2) : 0;
     const kR = Math.max(0, st.g - st.r) * a, kB = Math.max(0, st.g - st.b) * a;
     const ex = Math.pow(2, p.exposure);
-    const gr = (1 + p.temp * 0.004) * ex, gb = (1 - p.temp * 0.004) * ex, gg = (1 + p.tint * 0.003) * ex;
+    const gr = (1 + p.temp * 0.004) * ex * Math.pow(2, (p.gainR || 0) / 50), gb = (1 - p.temp * 0.004) * ex * Math.pow(2, (p.gainB || 0) / 50), gg = (1 + p.tint * 0.003) * ex * Math.pow(2, (p.gainG || 0) / 50);
     const dz = p.dehaze ? clamp(p.dehazeAmt / 100, 0, 1) : 0;
     // depth-aware mode: per-channel transmission exp(-k_c * z), z = relative distance (0 near .. 1 far) from the depth model.
     // red is absorbed fastest (k_r = rr), green about 1+0.3(rr-1) times blue; far water is brought back the most.
@@ -231,6 +237,13 @@ const Engine = (() => {
       if (g > 0.85) g = 0.85 + 0.15 * Math.tanh((g - 0.85) / 0.15);
       if (b > 0.85) b = 0.85 + 0.15 * Math.tanh((b - 0.85) / 0.15);
       C.r = r; C.g = g; C.b = b;
+    };
+    // red recovery: where red is missing (local r/g ratio low) rebuild it from green * a lifted ratio; keeps real red where it exists
+    const rrw = clamp((p.redRecover || 0) / 100, 0, 1), rgGlobal = st.r / Math.max(st.g, 0.004);
+    const red = (r, g, x, y) => {
+      if (rrw <= 0) return r;
+      const rg = st.rg ? st.rg[((y * sy) | 0) * tw + ((x * sx) | 0)] : rgGlobal, need = Math.max(0, 0.85 - rg), T = rg + rrw * 0.9 * need, w = rrw * clamp(need / 0.5, 0, 1);
+      return r + w * (g * T - r);
     };
     const Araw = st.A || [0.3, 0.55, 0.75];
     stage1(Araw[0], Araw[1], Araw[2]);
@@ -252,7 +265,7 @@ const Engine = (() => {
       const gr2 = g / r;
       return clamp(Math.min((gr2 - 0.3) / 0.15, (0.95 - gr2) / 0.1), 0, 1);
     };
-    return { skin, kR, kB, ex, gain: [gr, gg, gb], dz, A1: [A1r, A1g, A1b], A1min, hasTrans: !!tr, dd, Kd, stage1, dehaze, skinMask, C };
+    return { skin, kR, kB, ex, gain: [gr, gg, gb], dz, A1: [A1r, A1g, A1b], A1min, hasTrans: !!tr, dd, Kd, rrw, rgGlobal, red, stage1, dehaze, skinMask, C };
   }
 
   /* Per-channel percentile stretch. Measured once per clip/image and cached, so video does not flicker. */
@@ -260,14 +273,14 @@ const Engine = (() => {
     const L = clamp((p.levels || 0) / 100, 0, 1);
     if (L <= 0) return { L: 0, lo: [0, 0, 0], sc: [1, 1, 1] };
     if (st.ref) { data = st.ref.data; w = st.ref.w; h = st.ref.h; }
-    const key = [p.levels, p.cast, p.castAmt, p.temp, p.tint, p.exposure, p.dehaze, p.dehazeAmt, p.skin, w, h].join('|');
+    const key = [p.levels, p.cast, p.castAmt, p.temp, p.tint, p.exposure, p.dehaze, p.dehazeAmt, p.skin, p.gainR, p.gainG, p.gainB, p.redRecover, p.depth, p.depthAmt, p.depthRR, w, h].join('|');
     if (st._lvKey === key) return st._lv;
     const core = makeCore(p, st, w, h), dz = core.dz, C = core.C;
     const H = [new Uint32Array(256), new Uint32Array(256), new Uint32Array(256)], step = Math.max(2, Math.round(Math.sqrt(w * h / 40000)));
     let cnt = 0;
     for (let y = 0; y < h; y += step) for (let x = 0; x < w; x += step) {
       const i = (y * w + x) * 4;
-      core.stage1(data[i] / 255, data[i + 1] / 255, data[i + 2] / 255);
+      { const gv = data[i + 1] / 255; core.stage1(core.red(data[i] / 255, gv, x, y), gv, data[i + 2] / 255); }
       if (dz > 0 || core.dd) core.dehaze(x, y, 0);
       H[0][clamp((C.r * 255) | 0, 0, 255)]++; H[1][clamp((C.g * 255) | 0, 0, 255)]++; H[2][clamp((C.b * 255) | 0, 0, 255)]++; cnt++;
     }
@@ -317,7 +330,7 @@ const Engine = (() => {
         const i = (y * w + x) * 4;
         const r0 = input[i] / 255, g0 = input[i + 1] / 255, b0 = input[i + 2] / 255;
         const m0 = skinMask(r0, g0, b0);   // judged on the ORIGINAL pixel: near-surface skin is already warm
-        core.stage1(r0, g0, b0);
+        core.stage1(core.red(r0, g0, x, y), g0, b0);
         if (dz > 0 || core.dd) core.dehaze(x, y, m0);
         let r = C.r, g = C.g, b = C.b;
         if (L > 0) {

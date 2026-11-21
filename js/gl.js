@@ -7,7 +7,8 @@ void main(){ vUv = p * 0.5 + 0.5; gl_Position = vec4(p, 0.0, 1.0); }`;
 
   const FS_MAIN = `#version 300 es
 precision highp float; precision highp int;
-uniform sampler2D uSrc; uniform sampler2D uTrans; uniform sampler2D uCurve; uniform sampler2D uDepth;
+uniform sampler2D uSrc; uniform sampler2D uTrans; uniform sampler2D uCurve; uniform sampler2D uDepth; uniform sampler2D uRG;
+uniform int uHasRG; uniform float uRRw, uRGg;
 uniform vec2 uTexel; uniform float uDenoise;
 uniform int uSkin, uHasTrans, uCurves, uWOn, uNB, uDepthOn;
 uniform float uKR, uKB, uDz, uA1min, uL, uBk, uCt, uHi, uSh, uVib, uSat, uEx;
@@ -44,7 +45,13 @@ void main(){
     raw = mix(raw, s / 9.0, uDenoise);
   }
   float m0 = skinMask(raw);
-  vec3 c = stage1(raw);
+  vec3 rw = raw;
+  if (uRRw > 0.0) {
+    float rg = uHasRG != 0 ? texture(uRG, vec2(vUv.x, 1.0 - vUv.y)).r : uRGg;
+    float need = max(0.0, 0.85 - rg), T = rg + uRRw * 0.9 * need, w = uRRw * clamp(need / 0.5, 0.0, 1.0);
+    rw.r = raw.r + w * (raw.g * T - raw.r);
+  }
+  vec3 c = stage1(rw);
   if (uDepthOn != 0) {
     float z = texture(uDepth, vec2(vUv.x, 1.0 - vUv.y)).r, m = 1.0 - m0 * 0.95;
     vec3 tt = vec3(1.0) - m * (vec3(1.0) - max(exp(-uK * z), vec3(0.18)));
@@ -176,7 +183,7 @@ void main(){
       this.texA = this.tex(gl.LINEAR_MIPMAP_NEAREST, gl.LINEAR);
       this.texS1 = this.tex(gl.LINEAR, gl.LINEAR); this.texS2 = this.tex(gl.LINEAR, gl.LINEAR);
       this.fbA = gl.createFramebuffer(); this.fbS1 = gl.createFramebuffer(); this.fbS2 = gl.createFramebuffer();
-      this.locs = new Map(); this.w = 0; this.h = 0; this._transFor = null; this.hasTrans = false; this._depthFor = null; this.texDepth = this.tex(gl.LINEAR, gl.LINEAR);
+      this.locs = new Map(); this.w = 0; this.h = 0; this._transFor = null; this.hasTrans = false; this._depthFor = null; this.texDepth = this.tex(gl.LINEAR, gl.LINEAR); this._rgFor = null; this.texRG = this.tex(gl.LINEAR, gl.LINEAR);
     }
     mk(fs) {
       const gl = this.gl, sh = (t, s) => { const o = gl.createShader(t); gl.shaderSource(o, s); gl.compileShader(o); if (!gl.getShaderParameter(o, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(o)); return o; };
@@ -218,6 +225,13 @@ void main(){
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src);
       gl.generateMipmap(gl.TEXTURE_2D);
     }
+    setRG(st) {
+      if (this._rgFor === st.rg) return;
+      this._rgFor = st.rg; if (!st.rg) return;
+      const gl = this.gl; gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, this.texRG);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R16F, st.tw, st.th, 0, gl.RED, gl.FLOAT, st.rg);
+    }
     setDepth(st) {
       if (this._depthFor === st.depth) return;
       this._depthFor = st.depth; if (!st.depth) return;
@@ -240,7 +254,7 @@ void main(){
       if (this.lost || this.gl.isContextLost()) { this.lost = true; throw new Error('webgl context lost'); }
       const gl = this.gl, w = this.w, h = this.h, P = this.progs.main, U = (n) => this.u(P, n);
       const core = Engine.makeCore(p, st, w, h), cv = Engine.curveTables(p), wh = Engine.wheelVectors(p), bands = Engine.activeBands(p);
-      this.setTrans(st); if (core.dd) this.setDepth(st);
+      this.setTrans(st); if (core.dd) this.setDepth(st); if (core.rrw > 0 && st.rg) this.setRG(st);
       const lut = new Float32Array(256 * 4);
       for (let i = 0; i < 256; i++) { lut[i * 4] = cv.cR[i]; lut[i * 4 + 1] = cv.cG[i]; lut[i * 4 + 2] = cv.cB[i]; lut[i * 4 + 3] = 1; }
       gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, this.texCurve); gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
@@ -258,6 +272,8 @@ void main(){
       gl.uniform3f(U('uGain'), core.gain[0], core.gain[1], core.gain[2]);
       gl.uniform1f(U('uDz'), core.dz); gl.uniform3f(U('uA1'), core.A1[0], core.A1[1], core.A1[2]); gl.uniform1f(U('uA1min'), core.A1min);
       gl.uniform1i(U('uHasTrans'), this.hasTrans ? 1 : 0);
+      gl.uniform1f(U('uRRw'), core.rrw); gl.uniform1f(U('uRGg'), core.rgGlobal); gl.uniform1i(U('uHasRG'), st.rg ? 1 : 0);
+      gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, this.texRG); gl.uniform1i(U('uRG'), 6);
       gl.uniform1i(U('uDepthOn'), core.dd ? 1 : 0); gl.uniform3f(U('uK'), core.Kd[0], core.Kd[1], core.Kd[2]);
       gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, this.texDepth); gl.uniform1i(U('uDepth'), 5);
       gl.uniform1f(U('uL'), lv.L); gl.uniform3f(U('uLo'), lv.lo[0], lv.lo[1], lv.lo[2]); gl.uniform3f(U('uSc'), lv.sc[0], lv.sc[1], lv.sc[2]);

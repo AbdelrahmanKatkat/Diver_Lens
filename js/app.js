@@ -450,7 +450,13 @@ const SL = {
     { k: 'vibrance', l: 'Vibrance', min: -100, max: 100, tr: rainbow },
     { k: 'saturation', l: 'Saturation', min: -100, max: 100, tr: rainbow },
   ],
+  chan: [
+    { k: 'gainR', l: 'Red gain', min: -100, max: 100, tr: 'linear-gradient(90deg,#222,#ff4a4a)' },
+    { k: 'gainG', l: 'Green gain', min: -100, max: 100, tr: 'linear-gradient(90deg,#222,#3bff7a)' },
+    { k: 'gainB', l: 'Blue gain', min: -100, max: 100, tr: 'linear-gradient(90deg,#222,#4a8dff)' },
+  ],
   adv: [
+    { k: 'redRecover', l: 'Red recov.', min: 0, max: 100 },
     { k: 'clarity', l: 'Clarity', min: -100, max: 100 },
     { k: 'castAmt', l: 'Red comp.', min: 0, max: 100 },
     { k: 'levels', l: 'Auto levels', min: 0, max: 100 },
@@ -498,7 +504,7 @@ function changed() {
 }
 
 function buildControls() {
-  [['wb', '#sl-wb'], ['tone', '#sl-tone'], ['adv', '#sl-adv']].forEach(([g, sel]) => {
+  [['wb', '#sl-wb'], ['chan', '#sl-chan'], ['tone', '#sl-tone'], ['adv', '#sl-adv']].forEach(([g, sel]) => {
     SL[g].forEach((d) => { refs[d.k] = slider(d, () => cur().params[d.k], paramSet(d.k), $(sel)); });
   });
   const tg = $('#toggles');
@@ -796,16 +802,20 @@ async function savePreset() {
 }
 $('#savePreset').onclick = $('#savePreset2').onclick = savePreset;
 
-$('#resetBtn').onclick = () => { const it = cur(); if (!it) return; it.params = E.neutralParams(); it.autoAmt = 100; it.water = 'auto'; S.quick = null; $$('#quick button').forEach((b) => b.classList.remove('on')); syncUI(); requestRender(); commit(); toast('Reset to the untouched original. Undo brings it back.'); };
+$('#resetBtn').onclick = () => { const it = cur(); if (!it) return; it.params = E.neutralParams(); it.autoAmt = 100; it.water = 'auto'; it.aggr = false; S.quick = null; $$('#quick button').forEach((b) => b.classList.remove('on')); syncUI(); requestRender(); commit(); toast('Reset to the untouched original. Undo brings it back.'); };
 
 /* ---------------- Auto amount, undo / redo, grey-point picker, histogram, pro tools ---------------- */
 function applyAuto(amt) {
   const it = cur(); if (!it) return toast('Open a photo or video first');
   it.autoAmt = amt;
   it.params = Object.assign(E.neutralParams(), E.autoParams(it.st, amt / 100, it.water, it.useDepth && !!it.st.depth));
+  if (it.aggr) { const p = it.params; p.redRecover = Math.round(clamp(80 * amt / 100, 0, 100)); p.gainB = Math.round(clamp(50 * Math.log2(Math.min(1, it.st.g / Math.max(it.st.b, 0.004))) * 0.9, -70, 0) * Math.min(1, amt / 100)); p.cast = true; p.castAmt = Math.min(100, p.castAmt + 15); p.levels = Math.min(100, p.levels + 8); }
   it.edited = true; S.quick = null; $$('#quick button').forEach((b) => b.classList.remove('on'));
   markStep('corrected'); updateCounts(); syncUI(); requestRender(); commit();
 }
+refs.swAggr = () => { const it = cur(); if (it) $('#swAggr').setAttribute('aria-checked', !!it.aggr); };
+function toggleAggr() { const it = cur(); if (!it) return toast('Open a photo or video first'); it.aggr = !it.aggr; applyAuto(it.autoAmt == null ? 100 : it.autoAmt); refs.swAggr(); toast(it.aggr ? 'Aggressive red recovery on' : 'Aggressive red recovery off'); }
+$('#swAggr').onclick = toggleAggr; $('#tgAggr').onclick = (e) => { if (e.target.id !== 'swAggr') toggleAggr(); };
 /* Depth-aware switch: loads the depth model only when it is turned on */
 refs.swDepth = () => {
   const it = cur(), sw = $('#swDepth'); if (!it) return;
@@ -860,7 +870,7 @@ function updateUndoBtns() { const it = cur(), h = it && it.hist; $('#undoBtn').d
 function undoRedo(d) {
   const it = cur(); if (!it) return; commitNow();
   const h = hist(it), n = h.i + d; if (n < 0 || n >= h.s.length) return;
-  h.i = n; const o = JSON.parse(h.s[n]); it.params = o.p; it.autoAmt = o.a; it.water = o.w || 'auto'; it.useDepth = !!(o.p && o.p.depth); it.edited = true; S.quick = null;
+  h.i = n; const o = JSON.parse(h.s[n]); it.params = o.p; it.autoAmt = o.a; it.water = o.w || 'auto'; it.useDepth = !!(o.p && o.p.depth); it.aggr = !!(o.p && o.p.redRecover >= 40); it.edited = true; S.quick = null;
   syncUI(); requestRender(); updateUndoBtns();
 }
 $('#undoBtn').onclick = () => undoRedo(-1); $('#redoBtn').onclick = () => undoRedo(1);

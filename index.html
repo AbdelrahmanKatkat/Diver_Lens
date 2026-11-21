@@ -135,6 +135,10 @@
           </div>
           <button class="btn primary wide" id="autoBtn"><svg class="i" data-i="wand"></svg> Auto Enhance</button>
           <div id="sl-auto"></div>
+          <div class="tg" id="tgAggr" title="Rebuilds missing red from the green channel's detail and a smooth local colour, so red noise is not amplified. Strongest on deep, blue shots.">
+            <span>Aggressive red recovery<small class="dsub">Optional. Best on shallow or moderate-depth shots. Avoid on deep blue scenes: it can turn violet or show bands.</small></span>
+            <button class="sw" id="swAggr" role="switch" aria-checked="false" aria-label="Aggressive red recovery"></button>
+          </div>
           <div class="tg" id="tgDepth" title="Estimates how far away each part of the picture is and corrects it by distance. Downloads a 38 MB model once, then works offline.">
             <span>Depth-aware <em class="exp">experimental</em><small class="dsub" id="depthSub">Photos only. Downloads about 38 MB once.</small></span>
             <button class="sw" id="swDepth" role="switch" aria-checked="false" aria-label="Depth-aware correction (experimental)"></button>
@@ -145,6 +149,11 @@
         <section class="rsec">
           <h3 class="rh">White Balance (Underwater) <span class="hbtns"><button class="auto" id="pickWB" title="Click a grey or white area of the picture (W)"><svg class="i" data-i="pipette"></svg> Pick grey</button> <button class="auto" id="autoWB"><svg class="i" data-i="wand"></svg> Auto</button></span></h3>
           <div id="sl-wb"></div>
+        </section>
+        <section class="rsec">
+          <h3 class="rh tog">Channel gains <svg class="i chev" data-i="down"></svg></h3>
+          <div id="sl-chan"></div>
+          <p class="hint">Raise a colour channel by hand. For shallow or moderate-depth shots, Red gain is usually the best way to bring warm colours back.</p>
         </section>
         <section class="rsec">
           <h3 class="rh tog">Color &amp; Tone <svg class="i chev" data-i="down"></svg></h3>

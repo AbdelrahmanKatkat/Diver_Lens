@@ -27,6 +27,7 @@ let fails = 0; const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); 
       const w = 480, h = Math.round(im.naturalHeight * 480 / im.naturalWidth), c = document.createElement('canvas'); c.width = w; c.height = h;
       const x = c.getContext('2d', { willReadFrequently: true }); x.drawImage(im, 0, 0, w, h); const id = x.getImageData(0, 0, w, h);
       const st = Engine.computeStats(id.data, w, h), p = Object.assign(Engine.neutralParams(), Engine.autoParams(st));
+      if (n === 'turtle' || n === 'wreck') Object.assign(p, { redRecover: 80, gainR: 20, gainB: -15 });   // also checks red recovery and channel gains on the GPU
       const cpu = new Uint8ClampedArray(id.data.length); Engine.process(id.data, cpu, w, h, p, st);
       const g = GLR.create(); if (!g) { out.push({ n, noGL: true }); continue; }
       g.setSize(w, h); g.upload(c); g.render(p, st, Engine.getLevels(p, st, id.data, w, h));
