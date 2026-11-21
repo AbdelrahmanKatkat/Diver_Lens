@@ -296,3 +296,6 @@ button:focus-visible,.pr:focus-visible,[role=button]:focus-visible,.th:focus-vis
 
 .chk{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted);margin:8px 0}
 @media (max-width:820px){.actions{position:sticky;bottom:0;z-index:20;backdrop-filter:blur(8px)}}
+
+.tg .exp{font-style:normal;font-size:10px;text-transform:uppercase;letter-spacing:.04em;background:var(--accent);color:var(--accent-t);padding:1px 6px;border-radius:6px;margin-left:6px}
+.tg .dsub{display:block;color:var(--muted);font-size:11px;margin-top:2px}

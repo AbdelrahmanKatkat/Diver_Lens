@@ -20,6 +20,7 @@ It is a pure static website: no server, no build step, no account. **Your files 
 - **Video editing**: trim start and end, speed from 0.25× to 4×, fade in and out, remove the audio. The preview and the exported MP4 follow your edits.
 - **Export**: JPEG, PNG or WebP at full resolution; **video to MP4 (H.264 + AAC)** up to the original resolution; batch export as a ZIP or into a folder; project files that store your settings.
 - **Water conditions**: tell Auto what you are diving in (Blue, Green, Turbid, Shallow or Corrected), or leave it on Auto and it shows what it detected.
+- **Depth-aware (experimental, photos only)**: an optional switch that downloads a small depth model (Depth Anything V2 Small, Apache-2.0, about 38 MB with the runtime) the first time you turn it on, estimates how far each part of the picture is and corrects by distance. Nothing is downloaded until you switch it on, and the photo never leaves your device.
 - **Zoom and pan** on the preview (mouse wheel, or the Fit / 100% buttons), preset thumbnails made from your own photo, copy and paste settings between photos, and a note when you reopen a file you edited before.
 - **Fast**: the colour engine runs on your graphics card (WebGL2), so sliders and video preview are real-time. A CPU version is used automatically if WebGL2 is not available.
 - **Undo / redo, histogram, shortcuts**: Ctrl+Z / Ctrl+Y, hold `\` to see the original, `W` for the grey picker. Curves, Color Wheels and HSL sit under a **Pro tools** bar that you can open when you need them.
@@ -90,4 +91,4 @@ Sample photos are from Wikimedia Commons:
 
 The page background is a cinematic coral reef illustration supplied with the project.
 
-MP4 writing uses [mp4-muxer](https://github.com/Vanilagy/mp4-muxer) by Vanilagy (MIT license, included in `js/vendor/`). Video export reads and writes files with [Mediabunny](https://github.com/Vanilagy/mediabunny) by Vanilagy (MPL-2.0, license included in `js/vendor/`).
+The optional depth model is [Depth Anything V2 Small](https://github.com/DepthAnything/Depth-Anything-V2) (Apache-2.0), run with [ONNX Runtime Web](https://github.com/microsoft/onnxruntime) (MIT). MP4 writing uses [mp4-muxer](https://github.com/Vanilagy/mp4-muxer) by Vanilagy (MIT license, included in `js/vendor/`). Video export reads and writes files with [Mediabunny](https://github.com/Vanilagy/mediabunny) by Vanilagy (MPL-2.0, license included in `js/vendor/`).

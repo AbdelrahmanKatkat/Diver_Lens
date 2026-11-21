@@ -20,6 +20,7 @@ const Engine = (() => {
     return {
       temp: 0, tint: 0, exposure: 0, contrast: 0, highlights: 0, shadows: 0, vibrance: 0, saturation: 0, clarity: 0, levels: 0, skin: true,
       cast: false, castAmt: 70, dehaze: false, dehazeAmt: 40, backscatter: false, backAmt: 35, noise: false, noiseAmt: 40,
+      depth: false, depthAmt: 60, depthRR: 4,
       curves: { rgb: [[0, 0], [1, 1]], r: [[0, 0], [1, 1]], g: [[0, 0], [1, 1]], b: [[0, 0], [1, 1]] },
       wheels: { shadows: { x: 0, y: 0, l: 0 }, mid: { x: 0, y: 0, l: 0 }, high: { x: 0, y: 0, l: 0 } },
       hsl,
@@ -216,6 +217,10 @@ const Engine = (() => {
     const ex = Math.pow(2, p.exposure);
     const gr = (1 + p.temp * 0.004) * ex, gb = (1 - p.temp * 0.004) * ex, gg = (1 + p.tint * 0.003) * ex;
     const dz = p.dehaze ? clamp(p.dehazeAmt / 100, 0, 1) : 0;
+    // depth-aware mode: per-channel transmission exp(-k_c * z), z = relative distance (0 near .. 1 far) from the depth model.
+    // red is absorbed fastest (k_r = rr), green about 1+0.3(rr-1) times blue; far water is brought back the most.
+    const dd = !!(p.depth && st.depth), dA = clamp((p.depthAmt == null ? 60 : p.depthAmt) / 100, 0, 1.5), rr = p.depthRR || 4;
+    const Kd = [dA * 0.55 * rr, dA * 0.55 * (1 + (rr - 1) * 0.3), dA * 0.55], TMIN = 0.18;
     const tr = st.trans, tw = st.tw, th = st.th, sx = tw / w, sy = th / h;
     const C = { r: 0, g: 0, b: 0 };
     const stage1 = (r, g, b) => {
@@ -231,6 +236,12 @@ const Engine = (() => {
     stage1(Araw[0], Araw[1], Araw[2]);
     const A1r = C.r, A1g = C.g, A1b = C.b, A1min = Math.max(0.05, Math.min(A1g, A1b));
     const dehaze = (x, y, prot) => {
+      if (dd) {
+        const z = st.depth[((y * sy) | 0) * tw + ((x * sx) | 0)], m = 1 - prot * 0.95;
+        const tR = 1 - m * (1 - Math.max(TMIN, Math.exp(-Kd[0] * z))), tG = 1 - m * (1 - Math.max(TMIN, Math.exp(-Kd[1] * z))), tB = 1 - m * (1 - Math.max(TMIN, Math.exp(-Kd[2] * z)));
+        C.r = (C.r - A1r) / tR + A1r; C.g = (C.g - A1g) / tG + A1g; C.b = (C.b - A1b) / tB + A1b;
+        return;
+      }
       let t = tr ? tr[((y * sy) | 0) * tw + ((x * sx) | 0)] : 1 - 0.95 * Math.min(1, Math.min(C.g, C.b) / A1min);
       t = 1 - dz * (1 - prot * 0.95) * (1 - t); if (t < 0.3) t = 0.3;
       C.r = (C.r - A1r) / t + A1r; C.g = (C.g - A1g) / t + A1g; C.b = (C.b - A1b) / t + A1b;
@@ -241,7 +252,7 @@ const Engine = (() => {
       const gr2 = g / r;
       return clamp(Math.min((gr2 - 0.3) / 0.15, (0.95 - gr2) / 0.1), 0, 1);
     };
-    return { skin, kR, kB, ex, gain: [gr, gg, gb], dz, A1: [A1r, A1g, A1b], A1min, hasTrans: !!tr, stage1, dehaze, skinMask, C };
+    return { skin, kR, kB, ex, gain: [gr, gg, gb], dz, A1: [A1r, A1g, A1b], A1min, hasTrans: !!tr, dd, Kd, stage1, dehaze, skinMask, C };
   }
 
   /* Per-channel percentile stretch. Measured once per clip/image and cached, so video does not flicker. */
@@ -257,7 +268,7 @@ const Engine = (() => {
     for (let y = 0; y < h; y += step) for (let x = 0; x < w; x += step) {
       const i = (y * w + x) * 4;
       core.stage1(data[i] / 255, data[i + 1] / 255, data[i + 2] / 255);
-      if (dz > 0) core.dehaze(x, y, 0);
+      if (dz > 0 || core.dd) core.dehaze(x, y, 0);
       H[0][clamp((C.r * 255) | 0, 0, 255)]++; H[1][clamp((C.g * 255) | 0, 0, 255)]++; H[2][clamp((C.b * 255) | 0, 0, 255)]++; cnt++;
     }
     const lo = [0, 0, 0], sc = [1, 1, 1], minRange = [0.7, 0.45, 0.45];
@@ -307,7 +318,7 @@ const Engine = (() => {
         const r0 = input[i] / 255, g0 = input[i + 1] / 255, b0 = input[i + 2] / 255;
         const m0 = skinMask(r0, g0, b0);   // judged on the ORIGINAL pixel: near-surface skin is already warm
         core.stage1(r0, g0, b0);
-        if (dz > 0) core.dehaze(x, y, m0);
+        if (dz > 0 || core.dd) core.dehaze(x, y, m0);
         let r = C.r, g = C.g, b = C.b;
         if (L > 0) {
           const Lp = L * (1 - 0.9 * Math.max(m0, skinMask(r, g, b)));
@@ -440,18 +451,30 @@ const Engine = (() => {
   const lerpNum = (a, b, t) => a + (b - a) * t;
   function scaleRecipe(r, amt) {
     const o = Object.assign({}, r), A = clamp(amt, 0, 1.5);
-    for (const k of ['castAmt', 'levels', 'dehazeAmt', 'backAmt', 'noiseAmt', 'exposure', 'contrast', 'clarity', 'vibrance', 'shadows', 'highlights', 'temp', 'tint']) {
+    for (const k of ['castAmt', 'levels', 'dehazeAmt', 'depthAmt', 'backAmt', 'noiseAmt', 'exposure', 'contrast', 'clarity', 'vibrance', 'shadows', 'highlights', 'temp', 'tint']) {
       if (typeof o[k] === 'number') o[k] = k === 'exposure' ? +(o[k] * A).toFixed(2) : Math.round(k.endsWith('Amt') || k === 'levels' ? clamp(o[k] * A, 0, 100) : o[k] * A);
     }
     return o;
   }
   // water: 'auto' (use what was detected) or one of WATER_TYPES chosen by the user
-  function autoParams(st, amt, water) {
+  function autoParams(st, amt, water, useDepth) {
     amt = amt == null ? 1 : amt;
-    const kind = water && water !== 'auto' ? water : sceneOf(st).kind;
+    const kind = water && water !== 'auto' ? water : sceneOf(st).kind, dep = !!(useDepth && st.depth), key = kind + (dep ? '|d' : '');
     st._auto = st._auto || {};
-    if (!st._auto[kind]) st._auto[kind] = autoBest(st, kind);   // the search runs once per picture and type; the Amount slider only rescales it
-    return scaleRecipe(st._auto[kind], amt);
+    if (!st._auto[key]) st._auto[key] = dep ? autoBestDepth(st, kind) : autoBest(st, kind);   // the search runs once per picture and type; the Amount slider only rescales it
+    return scaleRecipe(st._auto[key], amt);
+  }
+  // depth-aware Auto: the distance map is given, so the search is over how strongly (and how red-heavy) the water is, scored like the normal search
+  function autoBestDepth(st, kind) {
+    const sc = sceneOf(st), base = baseRecipe(st, sc, kind), sm = st.small;
+    const out = new Uint8ClampedArray(sm.data.length), n = sm.w * sm.h, s2 = Object.assign({}, st);
+    let best = null, bs = Infinity;
+    for (const da of [35, 60, 85]) for (const rr of [2.5, 4, 6]) for (const cs of [0.35, 0.7]) {
+      const cand = Object.assign({}, base, { depth: true, depthAmt: da, depthRR: rr, castAmt: Math.round(base.castAmt * cs), levels: Math.round(base.levels * 0.8) });
+      s2._lvKey = null; process(sm.data, out, sm.w, sm.h, Object.assign(neutralParams(), cand), s2);
+      const sco = scoreLook(out, n); if (sco < bs) { bs = sco; best = cand; }
+    }
+    return best || Object.assign({}, base, { depth: true });
   }
   function autoBest(st, kind) {
     const sc = sceneOf(st), base = baseRecipe(st, sc, kind);

@@ -8,7 +8,7 @@
 <link rel="icon" href="assets/logo.svg" type="image/svg+xml">
 <link rel="manifest" href="manifest.webmanifest">
 <meta name="theme-color" content="#04122a">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self' blob:; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self' blob:; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'none'">
 <script src="js/theme.js"></script>
 <link rel="stylesheet" href="css/style.css">
 </head>
@@ -135,6 +135,10 @@
           </div>
           <button class="btn primary wide" id="autoBtn"><svg class="i" data-i="wand"></svg> Auto Enhance</button>
           <div id="sl-auto"></div>
+          <div class="tg" id="tgDepth" title="Estimates how far away each part of the picture is and corrects it by distance. Downloads a 38 MB model once, then works offline.">
+            <span>Depth-aware <em class="exp">experimental</em><small class="dsub" id="depthSub">Photos only. Downloads about 38 MB once.</small></span>
+            <button class="sw" id="swDepth" role="switch" aria-checked="false" aria-label="Depth-aware correction (experimental)"></button>
+          </div>
           <p class="hint" id="autoNote"></p>
           <canvas id="histCv" class="hist" width="256" height="64" role="img" aria-label="Colour histogram of the corrected picture"></canvas>
         </section>
@@ -326,6 +330,7 @@
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <script src="js/engine.js"></script>
+<script src="js/depth.js"></script>
 <script src="js/gl.js"></script>
 <script src="js/vendor/mp4-muxer.js"></script>
 <script src="js/app.js"></script>

@@ -238,6 +238,7 @@ function prepare(item, maxSide = WORK_IMG) {
   x.drawImage(item.el, 0, 0, w, h);
   const id = x.getImageData(0, 0, w, h);
   item.st = E.computeStats(id.data, w, h);
+  if (item.depthMap && window.Depth) item.st.depth = Depth.resample(item.depthMap, item.st.tw, item.st.th);
   return { w, h, id, src: id.data, out: x.createImageData(w, h) };
 }
 
@@ -801,10 +802,30 @@ $('#resetBtn').onclick = () => { const it = cur(); if (!it) return; it.params = 
 function applyAuto(amt) {
   const it = cur(); if (!it) return toast('Open a photo or video first');
   it.autoAmt = amt;
-  it.params = Object.assign(E.neutralParams(), E.autoParams(it.st, amt / 100, it.water));
+  it.params = Object.assign(E.neutralParams(), E.autoParams(it.st, amt / 100, it.water, it.useDepth && !!it.st.depth));
   it.edited = true; S.quick = null; $$('#quick button').forEach((b) => b.classList.remove('on'));
   markStep('corrected'); updateCounts(); syncUI(); requestRender(); commit();
 }
+/* Depth-aware switch: loads the depth model only when it is turned on */
+refs.swDepth = () => {
+  const it = cur(), sw = $('#swDepth'); if (!it) return;
+  sw.setAttribute('aria-checked', !!(it.useDepth && it.st && it.st.depth));
+  $('#depthSub').textContent = it.kind === 'video' ? 'Not available for video yet.' : Depth.isLoaded() ? 'Model ready. Works offline.' : 'Photos only. Downloads about 38 MB once.';
+};
+async function toggleDepth() {
+  const it = cur(); if (!it) return;
+  if (it.kind === 'video') return toast('Depth-aware works on photos for now');
+  const on = $('#swDepth').getAttribute('aria-checked') !== 'true';
+  if (!on) { it.useDepth = false; applyAuto(it.autoAmt == null ? 100 : it.autoAmt); return refs.swDepth(); }
+  try {
+    busy('Loading the depth model…');
+    await Depth.load((m) => ($('#busyTxt').textContent = m));
+    if (!it.depthMap) { $('#busyTxt').textContent = 'Estimating distances…'; await new Promise((r) => setTimeout(r, 20)); it.depthMap = await Depth.estimate(it.el, it.w, it.h, 364); }
+    it.st.depth = Depth.resample(it.depthMap, it.st.tw, it.st.th); it.useDepth = true;
+    busy(); applyAuto(it.autoAmt == null ? 100 : it.autoAmt); refs.swDepth(); toast('Depth-aware on. Use Amount to dial it, or switch it off.');
+  } catch (e) { busy(); console.warn('depth model failed', e); it.useDepth = false; refs.swDepth(); toast('Could not load the depth model here. Everything else still works.'); }
+}
+$('#swDepth').onclick = toggleDepth; $('#tgDepth').onclick = (e) => { if (e.target.id !== 'swDepth') toggleDepth(); };
 const WATER_LABEL = { blue: 'Blue', green: 'Green', turbid: 'Turbid', shallow: 'Shallow', corrected: 'Corrected' };
 refs.waterSeg = () => {
   const it = cur(); if (!it) return; const w = it.water || 'auto', det = it.st ? E.sceneOf(it.st).kind : null;
@@ -839,7 +860,7 @@ function updateUndoBtns() { const it = cur(), h = it && it.hist; $('#undoBtn').d
 function undoRedo(d) {
   const it = cur(); if (!it) return; commitNow();
   const h = hist(it), n = h.i + d; if (n < 0 || n >= h.s.length) return;
-  h.i = n; const o = JSON.parse(h.s[n]); it.params = o.p; it.autoAmt = o.a; it.water = o.w || 'auto'; it.edited = true; S.quick = null;
+  h.i = n; const o = JSON.parse(h.s[n]); it.params = o.p; it.autoAmt = o.a; it.water = o.w || 'auto'; it.useDepth = !!(o.p && o.p.depth); it.edited = true; S.quick = null;
   syncUI(); requestRender(); updateUndoBtns();
 }
 $('#undoBtn').onclick = () => undoRedo(-1); $('#redoBtn').onclick = () => undoRedo(1);
