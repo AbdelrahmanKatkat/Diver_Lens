@@ -17,7 +17,7 @@ let fails = 0; const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); 
 (async () => {
   await new Promise((r) => server.listen(0, r)); const port = server.address().port;
   const browser = await puppeteer.launch({ executablePath: process.env.CHROME || 'C:/Program Files/Google/Chrome/Application/chrome.exe', headless: 'new', args: ['--no-sandbox', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
-  const pg = await browser.newPage(), errs = []; pg.on('pageerror', (e) => errs.push(e.message));
+  const pg = await browser.newPage(), errs = []; await pg.evaluateOnNewDocument(() => localStorage.setItem('dcl.tour', 'true')); pg.on('pageerror', (e) => errs.push(e.message));
   await pg.goto(`http://localhost:${port}/index.html`); await new Promise((r) => setTimeout(r, 3500));
   ok(errs.length === 0, 'page loads without script errors' + (errs.length ? ': ' + errs[0] : ''));
   const res = await pg.evaluate(async () => {

@@ -394,11 +394,24 @@ const Engine = (() => {
   function sceneOf(st) {
     const g = Math.max(st.g, 0.02), redLoss = clamp(1 - st.r / g, 0, 1), blueExcess = clamp((st.b - g) / g, 0, 1), greenExcess = clamp((g - st.b) / g, 0, 1);
     const conf = clamp((Math.max(st.g, st.b) - st.r) / Math.max(st.g, st.b, 0.02) / 0.3, 0, 1);   // 0: colours already balanced / not underwater
-    return { redLoss, blueExcess, greenExcess, conf, haze: st.minMean, spread: st.p99 - st.p1, dark: st.p50 < 0.2 };
+    const spread = st.p99 - st.p1;
+    const kind = conf < 0.15 ? 'corrected' : (st.minMean > 0.28 && spread < 0.65) ? 'turbid' : redLoss < 0.4 ? 'shallow' : (g - st.b) / g > 0.08 ? 'green' : 'blue';
+    return { redLoss, blueExcess, greenExcess, conf, haze: st.minMean, spread, dark: st.p50 < 0.2, kind };
   }
-  function baseRecipe(st, sc) {
+  // each water type nudges the base recipe in the direction that suits it
+  const WATER_TYPES = ['blue', 'green', 'turbid', 'shallow', 'corrected'];
+  function tuneForWater(r, kind, sc) {
+    const o = Object.assign({}, r);
+    if (kind === 'blue') { o.cast = true; o.temp = Math.max(o.temp, Math.round(10 * Math.max(sc.blueExcess, 0.3))); o.castAmt = Math.max(o.castAmt, 70); }
+    else if (kind === 'green') { o.cast = true; o.tint = Math.min(o.tint, -10); o.castAmt = Math.max(o.castAmt, 70); }
+    else if (kind === 'turbid') { o.dehaze = true; o.dehazeAmt = Math.max(o.dehazeAmt, 58); o.backscatter = true; o.backAmt = 45; o.clarity = Math.max(o.clarity, 24); o.levels = Math.min(o.levels, 70); o.castAmt = Math.round(o.castAmt * 0.85); }
+    else if (kind === 'shallow') { o.castAmt = Math.min(Math.max(o.castAmt, 35), 55); o.levels = Math.min(o.levels, 55); o.dehazeAmt = Math.round(o.dehazeAmt * 0.6); o.vibrance = Math.max(o.vibrance, 22); }
+    else if (kind === 'corrected') { o.cast = false; o.castAmt = 0; o.levels = 30; o.dehazeAmt = Math.min(o.dehazeAmt, 15); o.backAmt = 10; o.clarity = Math.min(o.clarity, 10); o.vibrance = 10; o.temp = 0; o.tint = 0; }
+    return o;
+  }
+  function baseRecipe(st, sc, kind) {
     const k = 0.35 + 0.65 * sc.conf;   // weak evidence of water cast -> gentle recipe
-    return {
+    return tuneForWater({
       cast: sc.conf > 0.05, castAmt: Math.round(clamp((60 + 55 * sc.redLoss) * k, 0, 110)),
       levels: Math.round((sc.redLoss > 0.7 ? 70 : 78) * k),
       dehaze: true, dehazeAmt: Math.round(clamp(st.minMean * 180, 22, 55) * (0.4 + 0.6 * sc.conf) * (sc.spread > 0.85 ? 0.6 : 1)),
@@ -408,7 +421,7 @@ const Engine = (() => {
       vibrance: Math.round(12 + 10 * sc.redLoss), saturation: 0, shadows: 8, highlights: -6,
       temp: Math.round(10 * sc.blueExcess * k), tint: -Math.round(10 * sc.greenExcess * k),
       noise: sc.dark && sc.redLoss > 0.4, noiseAmt: 25,
-    };
+    }, kind || sc.kind, sc);
   }
   // 0 = good, higher = worse. Natural underwater look: red recovered but not orange, no clipping, healthy spread.
   function scoreLook(o, n) {
@@ -432,16 +445,19 @@ const Engine = (() => {
     }
     return o;
   }
-  function autoParams(st, amt) {
+  // water: 'auto' (use what was detected) or one of WATER_TYPES chosen by the user
+  function autoParams(st, amt, water) {
     amt = amt == null ? 1 : amt;
-    if (!st._auto) st._auto = autoBest(st);   // the search runs once per picture; the Amount slider only rescales it
-    return scaleRecipe(st._auto, amt);
+    const kind = water && water !== 'auto' ? water : sceneOf(st).kind;
+    st._auto = st._auto || {};
+    if (!st._auto[kind]) st._auto[kind] = autoBest(st, kind);   // the search runs once per picture and type; the Amount slider only rescales it
+    return scaleRecipe(st._auto[kind], amt);
   }
-  function autoBest(st) {
-    const sc = sceneOf(st), base = baseRecipe(st, sc);
+  function autoBest(st, kind) {
+    const sc = sceneOf(st), base = baseRecipe(st, sc, kind);
     let best = base;
     const sm = st.small;
-    if (sm && sc.conf > 0.05) {
+    if (sm && kind !== 'corrected' && sc.conf > 0.05) {
       const s2 = Object.assign({}, st); s2._lvKey = null;   // keep the real statistics' cache untouched
       const out = new Uint8ClampedArray(sm.data.length), n = sm.w * sm.h;
       let bs = Infinity;
@@ -484,5 +500,5 @@ const Engine = (() => {
     return new Blob([...parts, ...central, end.buffer], { type: 'application/zip' });
   }
 
-  return { BANDS, neutralParams, defaultParams, clone, sanitizeParams, curveLUT, curveTables, wheelVectors, activeBands, computeStats, makeCore, getLevels, process, autoParams, sceneOf, makeZip, clamp };
+  return { BANDS, neutralParams, defaultParams, clone, sanitizeParams, curveLUT, curveTables, wheelVectors, activeBands, computeStats, makeCore, getLevels, process, autoParams, sceneOf, WATER_TYPES, makeZip, clamp };
 })();

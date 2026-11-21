@@ -139,7 +139,11 @@ const handle = $('#handle'), playBtn = $('#playBtn'), seek = $('#seek'), timeTxt
 const toastEl = $('#toast');
 
 let toastT;
-function toast(msg) { toastEl.textContent = msg; toastEl.classList.add('on'); clearTimeout(toastT); toastT = setTimeout(() => toastEl.classList.remove('on'), 3200); }
+function toast(msg, label, fn) {
+  toastEl.textContent = msg; toastEl.classList.toggle('act', !!label);
+  if (label) { const b = document.createElement('button'); b.type = 'button'; b.textContent = label; b.onclick = () => { toastEl.classList.remove('on'); fn(); }; toastEl.appendChild(b); }
+  toastEl.classList.add('on'); clearTimeout(toastT); toastT = setTimeout(() => toastEl.classList.remove('on'), label ? 9000 : 3200);
+}
 function busy(msg) { const b = $('#busy'); if (msg) { $('#busyTxt').textContent = msg; b.hidden = false; } else b.hidden = true; }
 const safeLS = {
   get: (k, d) => { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
@@ -212,14 +216,15 @@ async function addFiles(fileList) {
       let item;
       try { item = isVid ? await loadVideoItem(url, f.name) : await loadImageItem(url, f.name, { file: f }); }
       catch (e) { URL.revokeObjectURL(url); throw e; }
+      item.file = f; item.saved = loadSaved(item);
       S.items.push(item);
       if (first < 0) first = S.items.length - 1;
       ok++;
     } catch (e) { bad.push(f.name); }
   }
   busy();
-  if (bad.length) toast(`Your browser can't open: ${bad.slice(0, 3).join(', ')}${bad.length > 3 ? '…' : ''}`);
-  if (ok) { S.steps.imported = true; if (S.filter) S.filter = null; renderFilm(); await selectItem(first); toast(`Opened ${ok} file${ok > 1 ? 's' : ''} locally. Nothing was uploaded.`); }
+  if (bad.length) toast(`Your browser can't open: ${bad.slice(0, 3).join(', ')}${bad.length > 3 ? '…' : ''}.${bad.some((n) => /\.(mov|mp4|m4v|mkv)$/i.test(n)) ? ' Phone and action-camera video is often H.265 (HEVC); convert it to H.264 or use a browser with HEVC support (Safari, or Edge with the HEVC extension).' : ''}`);
+  if (ok) { S.steps.imported = true; if (S.filter) S.filter = null; renderFilm(); toast(`Opened ${ok} file${ok > 1 ? 's' : ''} locally. Nothing was uploaded.`); await selectItem(first); }
   updateSteps(); updateCounts();
 }
 
@@ -267,6 +272,8 @@ async function selectItem(i) {
   updateTime();
   syncUI(); renderFilm(); updateCropMode(true); render(); fit();
   $('#exName').textContent = it.name;
+  renderPresets(); resetZoom();
+  if (it.saved && !it.askedRestore) { it.askedRestore = true; toast('You edited this file before.', 'Restore', () => restoreSaved(it)); }
 }
 function applyVideoPrefs(it) {
   const v = it.el; v.playbackRate = it.edit.speed || 1;
@@ -400,10 +407,9 @@ function renderFilm() {
   S.items.forEach((it, i) => {
     if (S.filter && it.kind !== S.filter) return;
     const b = document.createElement('div');
-    b.className = 'th' + (i === S.cur ? ' on' : ''); b.tabIndex = 0; b.setAttribute('role', 'button'); b.setAttribute('aria-label', 'Open ' + it.name);
-    b.innerHTML = `<img alt="" src="${it.thumb}"><span class="k">${it.kind === 'video' ? 'Video' : it.sample ? esc(it.name) : 'Photo'}</span>${it.sample ? '' : `<button class="x" aria-label="Remove ${esc(it.name)}">${icon('x')}</button>`}`;
+    b.className = 'th' + (i === S.cur ? ' on' : '');
+    b.innerHTML = `<img alt="" src="${it.thumb}"><span class="k">${it.kind === 'video' ? 'Video' : it.sample ? esc(it.name) : 'Photo'}</span><button class="open" aria-label="Open ${esc(it.name)}"${i === S.cur ? ' aria-current="true"' : ''}></button>${it.sample ? '' : `<button class="x" aria-label="Remove ${esc(it.name)}">${icon('x')}</button>`}`;
     b.onclick = (e) => { if (e.target.closest('.x')) { removeItem(i); return; } selectItem(i); };
-    b.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectItem(i); } };
     strip.appendChild(b);
   });
   hydrateIcons(strip);
@@ -472,6 +478,7 @@ function slider(def, get, set, container) {
   rng.oninput = () => { const v = +rng.value; num.value = sv(v); set(v); };
   num.onchange = () => { const v = clamp(parseFloat(num.value) || 0, def.min, mx()); rng.value = v; num.value = sv(v); set(v); };
   lab.ondblclick = () => { const v = def.reset !== undefined ? (typeof def.reset === 'function' ? def.reset() : def.reset) : def.min < 0 ? 0 : (E.neutralParams()[def.k] ?? 0); rng.value = v; num.value = sv(v); set(v); };
+  const rb = document.createElement('button'); rb.type = 'button'; rb.className = 'rs'; rb.title = 'Reset'; rb.setAttribute('aria-label', 'Reset ' + def.l); rb.textContent = '\u21ba'; rb.onclick = (e) => { e.preventDefault(); lab.ondblclick(); }; lab.appendChild(rb);
   container.appendChild(row);
   return () => { rng.max = mx(); const v = get(); rng.value = v; num.value = sv(v); };
 }
@@ -621,7 +628,7 @@ function placeCrop() {
   $('#cropInfo').textContent = `Output: ${Math.round(c.w * d.rw)} × ${Math.round(c.h * d.rh)} px`;
 }
 const aspectVal = (e, rw, rh) => (e.aspect === 'free' ? null : e.aspect === 'orig' ? rw / rh : +e.aspect);
-function editTouched() { const it = cur(); it.edited = true; markStep('corrected'); updateCounts(); }
+function editTouched() { const it = cur(); it.edited = true; markStep('corrected'); updateCounts(); saveEdit(it); }
 function setCrop(c) { cur().edit.crop = c; placeCrop(); editTouched(); }
 function computeCrop(c, h, dx, dy) {
   const it = cur(), e = it.edit, { rw, rh } = outDims(e, it.w, it.h), MIN = 0.04, A = aspectVal(e, rw, rh);
@@ -746,40 +753,64 @@ function applyPreset(p) {
   it.params = Object.assign(base, E.clone(p));
   syncUI(); requestRender(); it.edited = true; markStep('corrected'); updateCounts(); commit();
 }
+// preview of a preset on the picture that is open (small copy, CPU engine)
+function presetThumb(p) {
+  const it = cur(), sm = it && it.st && it.st.small; if (!sm) return null;
+  try {
+    const s2 = Object.assign({}, it.st); s2._lvKey = null;
+    const o = new Uint8ClampedArray(sm.data.length); E.process(sm.data, o, sm.w, sm.h, Object.assign(E.neutralParams(), E.clone(p)), s2);
+    const c = document.createElement('canvas'); c.width = sm.w; c.height = sm.h; c.getContext('2d').putImageData(new ImageData(o, sm.w, sm.h), 0, 0);
+    return c.toDataURL('image/jpeg', 0.7);
+  } catch (e) { return null; }
+}
 function renderPresets() {
   [$('#presetGrid'), $('#presetGrid2')].forEach((grid) => {
     grid.innerHTML = '';
     BUILTIN.forEach((b) => {
-      const el = document.createElement('button'); el.className = 'pr'; el.innerHTML = `<div class="sw8" style="--g:${b.g}"></div><b>${b.n}</b><small>${b.d}</small>`;
+      const el = document.createElement('button'); el.className = 'pr'; const th = presetThumb(b.p); el.innerHTML = `${th ? `<img class="pth" alt="" src="${th}">` : `<div class="sw8" style="--g:${b.g}"></div>`}<b>${b.n}</b><small>${b.d}</small>`;
       el.onclick = () => { applyPreset(b.p); toast(`Preset: ${b.n}`); }; grid.appendChild(el);
     });
     userPresets().forEach((u, i) => {
       const el = document.createElement('div'); el.className = 'pr'; el.tabIndex = 0; el.setAttribute('role', 'button');
-      el.innerHTML = `<div class="sw8" style="--g:linear-gradient(90deg,#ffd21f,#19c3ff)"></div><b>${u.name.replace(/</g, '&lt;')}</b><small>My preset</small><button class="del" aria-label="Delete preset">${icon('trash')}</button>`;
+      const th2 = presetThumb(u.params); el.innerHTML = `${th2 ? `<img class="pth" alt="" src="${th2}">` : '<div class="sw8" style="--g:linear-gradient(90deg,#ffd21f,#19c3ff)"></div>'}<b>${u.name.replace(/</g, '&lt;')}</b><small>My preset</small><button class="del" aria-label="Delete preset">${icon('trash')}</button>`;
       el.onclick = (e) => { if (e.target.closest('.del')) { const l = userPresets(); l.splice(i, 1); safeLS.set('dcl.presets', l); renderPresets(); updateCounts(); return; } applyPreset(u.params); toast(`Preset: ${u.name}`); };
       grid.appendChild(el);
     });
     hydrateIcons(grid);
   });
 }
-function savePreset() {
+function askName(def) {
+  return new Promise((res) => {
+    const d = $('#dlgName'), i = $('#nameIn'); i.value = def; d.returnValue = '';
+    d.addEventListener('close', () => res(d.returnValue === 'ok' ? i.value.trim() : ''), { once: true });
+    $('#nameOk').onclick = () => d.close('ok'); i.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); d.close('ok'); } };
+    d.showModal(); i.select();
+  });
+}
+async function savePreset() {
   const it = cur(); if (!it) return;
-  const name = (prompt('Name for this preset:', 'My look') || '').trim(); if (!name) return;
+  const name = await askName('My look'); if (!name) return;
   const l = userPresets(); l.push({ name, params: E.clone(it.params) }); safeLS.set('dcl.presets', l);
   renderPresets(); updateCounts(); toast('Preset saved in this browser');
 }
 $('#savePreset').onclick = $('#savePreset2').onclick = savePreset;
 
-$('#resetBtn').onclick = () => { const it = cur(); if (!it) return; it.params = E.neutralParams(); it.autoAmt = 100; S.quick = null; $$('#quick button').forEach((b) => b.classList.remove('on')); syncUI(); requestRender(); commit(); toast('Reset to the untouched original. Undo brings it back.'); };
+$('#resetBtn').onclick = () => { const it = cur(); if (!it) return; it.params = E.neutralParams(); it.autoAmt = 100; it.water = 'auto'; S.quick = null; $$('#quick button').forEach((b) => b.classList.remove('on')); syncUI(); requestRender(); commit(); toast('Reset to the untouched original. Undo brings it back.'); };
 
 /* ---------------- Auto amount, undo / redo, grey-point picker, histogram, pro tools ---------------- */
 function applyAuto(amt) {
   const it = cur(); if (!it) return toast('Open a photo or video first');
   it.autoAmt = amt;
-  it.params = Object.assign(E.neutralParams(), E.autoParams(it.st, amt / 100));
+  it.params = Object.assign(E.neutralParams(), E.autoParams(it.st, amt / 100, it.water));
   it.edited = true; S.quick = null; $$('#quick button').forEach((b) => b.classList.remove('on'));
   markStep('corrected'); updateCounts(); syncUI(); requestRender(); commit();
 }
+const WATER_LABEL = { blue: 'Blue', green: 'Green', turbid: 'Turbid', shallow: 'Shallow', corrected: 'Corrected' };
+refs.waterSeg = () => {
+  const it = cur(); if (!it) return; const w = it.water || 'auto', det = it.st ? E.sceneOf(it.st).kind : null;
+  $$('#waterSeg button').forEach((b) => { b.classList.toggle('on', b.dataset.w === w); if (b.dataset.w === 'auto') b.textContent = det ? 'Auto (' + WATER_LABEL[det] + ')' : 'Auto'; });
+};
+$$('#waterSeg button').forEach((b) => (b.onclick = () => { const it = cur(); if (!it) return; it.water = b.dataset.w; applyAuto(it.autoAmt == null ? 100 : it.autoAmt); toast(b.dataset.w === 'auto' ? 'Water type: detected automatically' : 'Water type: ' + WATER_LABEL[b.dataset.w]); }));
 $('#autoBtn').onclick = () => { applyAuto(100); toast('Auto Enhance applied. Use Amount to dial it up or down.'); };
 refs.autoAmt = slider({ k: 'autoAmt', l: 'Amount', min: 0, max: 150, reset: 100, fmt: (v) => Math.round(v) + '%' }, () => (cur().autoAmt == null ? 100 : cur().autoAmt), (v) => applyAuto(v), $('#sl-auto'));
 refs.autoNote = () => {
@@ -795,20 +826,20 @@ refs.autoNote = () => {
 
 // history: one snapshot of the settings per finished change, per picture
 const H_MAX = 80; let commitT = 0, commitItem = null;
-const snap = (it) => JSON.stringify({ p: it.params, a: it.autoAmt == null ? 100 : it.autoAmt });
+const snap = (it) => JSON.stringify({ p: it.params, a: it.autoAmt == null ? 100 : it.autoAmt, w: it.water || 'auto' });
 const hist = (it) => it.hist || (it.hist = { s: [snap(it)], i: 0 });
 function commit() { commitItem = cur(); clearTimeout(commitT); commitT = setTimeout(commitNow, 350); }
 function commitNow() {
   clearTimeout(commitT); const it = commitItem || cur(); commitItem = null; if (!it) return;
   const h = hist(it), j = snap(it);
   if (h.s[h.i] === j) return;
-  h.s.length = h.i + 1; h.s.push(j); if (h.s.length > H_MAX) h.s.shift(); h.i = h.s.length - 1; updateUndoBtns();
+  h.s.length = h.i + 1; h.s.push(j); if (h.s.length > H_MAX) h.s.shift(); h.i = h.s.length - 1; updateUndoBtns(); saveEdit(it);
 }
 function updateUndoBtns() { const it = cur(), h = it && it.hist; $('#undoBtn').disabled = !h || h.i <= 0; $('#redoBtn').disabled = !h || h.i >= h.s.length - 1; }
 function undoRedo(d) {
   const it = cur(); if (!it) return; commitNow();
   const h = hist(it), n = h.i + d; if (n < 0 || n >= h.s.length) return;
-  h.i = n; const o = JSON.parse(h.s[n]); it.params = o.p; it.autoAmt = o.a; it.edited = true; S.quick = null;
+  h.i = n; const o = JSON.parse(h.s[n]); it.params = o.p; it.autoAmt = o.a; it.water = o.w || 'auto'; it.edited = true; S.quick = null;
   syncUI(); requestRender(); updateUndoBtns();
 }
 $('#undoBtn').onclick = () => undoRedo(-1); $('#redoBtn').onclick = () => undoRedo(1);
@@ -1145,7 +1176,96 @@ async function exportVideoMP4(item, prog, handle) {
   } finally { if (streamW) { try { await streamW.abort(); } catch (e) {} } g.dispose(); v.removeAttribute('src'); v.load(); }
 }
 
+
+/* ---- decoder-based MP4 export (Mediabunny): the file is demuxed and decoded by the browser, every frame goes through the GPU
+   colour engine, and the result is encoded and written as it goes. Keeps the source frame rate (60 fps, variable-rate phone clips),
+   needs no seeking, and streams audio instead of loading the whole file. Falls back to the seek-based path if anything is unsupported. ---- */
+let MB = null;
+const loadMediabunny = async () => MB || (MB = await import('./vendor/mediabunny.min.mjs'));
+async function exportVideoDecode(item, prog, handle) {
+  if (!item.file || !window.VideoDecoder || !window.VideoEncoder || !GLR.supported()) throw new Error('decoder path unavailable');
+  const M = await loadMediabunny();
+  const ed = item.edit, maxSide = +$('#vSize').value, bpp = +$('#vQ').value;
+  const input = new M.Input({ source: new M.BlobSource(item.file), formats: M.ALL_FORMATS });
+  const vt = await input.getPrimaryVideoTrack(); if (!vt) throw new Error('no video track');
+  const dur = await input.computeDuration();
+  if (!(isFinite(dur) && dur > 0)) throw new Error('unknown length');
+  let fps = 30; try { const ps = await vt.computePacketStats(120); if (ps && ps.averagePacketRate > 1) fps = clamp(ps.averagePacketRate, 5, 120); } catch (e) { /* keep 30 */ }
+  const tIn = clamp(ed.tIn || 0, 0, dur), tOut = Math.min(dur, ed.tOut == null ? dur : ed.tOut), speed = ed.speed || 1, D = Math.max(0.1, (tOut - tIn) / speed);
+  const full = outDims(ed, item.w, item.h), sc = Math.min(1, maxSide / Math.max(full.ow, full.oh));
+  const sw = Math.max(2, Math.round(item.w * sc)) & ~1, sh = Math.max(2, Math.round(item.h * sc)) & ~1, od = outDims(ed, sw, sh), w = Math.max(2, od.ow & ~1), h = Math.max(2, od.oh & ~1);
+  const g = GLR.create(); if (!g) throw new Error('no GPU');
+  const src = document.createElement('canvas'); src.width = sw; src.height = sh; const sx = src.getContext('2d');
+  const oc = document.createElement('canvas'); oc.width = w; oc.height = h; const ocx = oc.getContext('2d');
+  let writable = null, wstream = null, conv = null, done = false;
+  try {
+    g.setSize(sw, sh);
+    if (handle) { try { writable = await handle.createWritable(); } catch (e) { writable = null; } }
+    if (writable) wstream = new WritableStream({ write: (c) => writable.write({ type: 'write', data: c.data, position: c.position }), close: () => {}, abort: () => {} });
+    const target = wstream ? new M.StreamTarget(wstream, { chunked: true, chunkSize: 8 * 1024 * 1024 }) : new M.BufferTarget();
+    const output = new M.Output({ format: new M.Mp4OutputFormat({ fastStart: wstream ? false : 'in-memory' }), target });
+    const plain = isIdentity(ed) && !(ed.fadeIn > 0) && !(ed.fadeOut > 0) && w === sw && h === sh;
+    let base = null, lastOut = -1, minGap = 1 / Math.min(60, fps) * 0.85;
+    const bitrate = Math.round(clamp(w * h * Math.min(60, fps) * bpp, 2e6, 80e6));
+    const videoProcess = (s) => {
+      if (base === null) base = (tIn > 0.2 && Math.abs(s.timestamp - tIn) < 0.5) ? tIn : 0;   // are timestamps source time or time since the trim start?
+      const t = (s.timestamp - base) / speed;
+      if (speed > 1 && lastOut >= 0 && t - lastOut < minGap) return null;                    // fast-forward: keep the frame rate sane
+      lastOut = t;
+      if (plain && !s.rotation && !s.flip) {                                                    // nothing to crop, rotate or fade: decoded frame straight to the GPU and out
+        const vf = s.toVideoFrame(); g.upload(vf); vf.close();
+        g.render(item.params, item.st, E.getLevels(item.params, item.st, null, 0, 0));
+        return new M.VideoSample(g.canvas, { timestamp: Math.max(0, t), duration: s.duration / speed });
+      }
+      sx.clearRect(0, 0, sw, sh); s.draw(sx, 0, 0, sw, sh);                                   // handles rotation metadata
+      g.upload(src); g.render(item.params, item.st, E.getLevels(item.params, item.st, null, 0, 0));
+      drawGeo(ocx, g.canvas, sw, sh, ed, w, h);
+      const f = fadeAt(ed, Math.max(0, t), D);
+      if (f < 1) { ocx.fillStyle = `rgba(0,0,0,${1 - f})`; ocx.fillRect(0, 0, w, h); }
+      return new M.VideoSample(oc, { timestamp: Math.max(0, t), duration: s.duration / speed });
+    };
+    const needAudioProc = speed !== 1 || ed.fadeIn > 0 || ed.fadeOut > 0;
+    const audioProcess = (s) => {
+      const ch = s.numberOfChannels, sr = s.sampleRate, n = s.numberOfFrames, m = Math.max(1, Math.floor(n / speed)), ts = (s.timestamp - (base || 0)) / speed;
+      const out = new Float32Array(ch * m), tmp = new Float32Array(n);
+      for (let c = 0; c < ch; c++) {
+        s.copyTo(tmp, { planeIndex: c, format: 'f32-planar' });
+        for (let k = 0; k < m; k++) {
+          const pos = k * speed, i0 = Math.floor(pos), fr = pos - i0, a = tmp[Math.min(i0, n - 1)], b = tmp[Math.min(i0 + 1, n - 1)];
+          out[c * m + k] = (a + (b - a) * fr) * fadeAt(ed, Math.max(0, ts + k / sr), D);
+        }
+      }
+      return new M.AudioSample({ data: out, format: 'f32-planar', numberOfChannels: ch, sampleRate: sr, timestamp: Math.max(0, ts) });
+    };
+    conv = await M.Conversion.init({
+      input, output, showWarnings: false,
+      trim: { start: tIn, end: tOut },
+      video: { codec: 'avc', bitrate, process: videoProcess, processedWidth: w, processedHeight: h, forceTranscode: true },
+      audio: ed.mute ? { discard: true } : needAudioProc ? { process: audioProcess, forceTranscode: true } : {},
+    });
+    if (!conv.isValid) throw new Error('this browser cannot encode this video here');
+    const watch = setInterval(() => { if (S.abort && conv) conv.cancel(); }, 200);
+    const t0 = performance.now();
+    conv.onProgress = (p) => { const el = (performance.now() - t0) / 1000, left = p > 0.02 ? Math.round(el / p * (1 - p)) : null; prog(p, `Rendering ${Math.round(p * 100)}%${left != null ? ` · about ${left}s left` : ''}`); };
+    try { await conv.execute(); } finally { clearInterval(watch); }
+    done = true;
+    if (writable) { await writable.close(); return { saved: true, ext: 'mp4', mime: 'video/mp4' }; }
+    return { blob: new Blob([target.buffer], { type: 'video/mp4' }), ext: 'mp4', mime: 'video/mp4' };
+  } catch (e) {
+    if (S.abort || (e && e.name === 'ConversionCanceledError')) { if (writable) { try { await writable.abort(); } catch (e2) {} writable = null; } return null; }
+    throw e;
+  } finally {
+    if (writable && !done) { try { await writable.abort(); } catch (e) {} }
+    g.dispose(); try { input.dispose && input.dispose(); } catch (e) {}
+  }
+}
+
 async function exportVideo(item, prog, handle) {
+  if (window.VideoDecoder && item.file && GLR.supported() && !S.noDecodePath) {
+    try { return await exportVideoDecode(item, prog, handle); }
+    catch (e) { if (e && e.message === 'cancelled') return null; console.warn('decoder export unavailable, using the compatible path:', e); }
+    if (S.abort) return null;
+  }
   if (canMP4()) {
     try { return await exportVideoMP4(item, prog, handle); }
     catch (e) { if (e && e.message === 'cancelled') return null; console.warn('MP4 export failed', e); toast('MP4 export unavailable here (' + (e.message || e) + '). Using compatible WebM mode.'); }
@@ -1163,15 +1283,17 @@ function openExport() {
   $('#exImg').hidden = it.kind === 'video'; $('#exVid').hidden = it.kind !== 'video';
   $('#exProg').hidden = true; $('#exGo').disabled = false;
   if (it.kind === 'video' && !canMP4()) $('#vNote').innerHTML = 'This browser cannot create MP4 here, so the video is saved as <b>WebM</b> in compatible mode (slower, up to 960 px). Use a recent Chrome or Edge for fast MP4 export.';
+  updateEx();
   if (!dlgEx.open) dlgEx.showModal();
 }
 $('#exQ').oninput = () => ($('#exQv').textContent = $('#exQ').value);
 $('#exFmt').onchange = () => ($('#exQ').disabled = $('#exFmt').value === 'image/png');
 $('#exCancel').onclick = () => { S.abort = true; };
+let wake = null;
 $('#exGo').onclick = async (e) => {
   e.preventDefault();
   const it = cur(); if (!it) return;
-  S.abort = false; $('#exGo').disabled = true;
+  S.abort = false; $('#exGo').disabled = true; S.noDecodePath = !!$('#vCompat').checked;
   try {
     if (it.kind === 'image') {
       const o = exOpts(), ext = EXT[o.type], name = `${slug(it.name)}_colorlab.${ext}`;
@@ -1185,6 +1307,7 @@ $('#exGo').onclick = async (e) => {
       const want = canMP4() ? 'mp4' : 'webm';
       let handle = await pickSave(`${slug(it.name)}_colorlab.${want}`, want === 'mp4' ? 'video/mp4' : 'video/webm', want);
       it.el.pause();
+      try { wake = navigator.wakeLock ? await navigator.wakeLock.request('screen') : null; } catch (e) { wake = null; }   // keep the screen on while it renders
       const res = await exportVideo(it, (p, txt) => setProg($('#exProg'), p, txt || `Rendering ${Math.round(p * 100)}%`), want === 'mp4' ? handle : null);
       if (!res) throw new Error('cancelled');
       if (res.ext !== want) handle = null;   // fell back to another format: use a normal download instead
@@ -1196,7 +1319,7 @@ $('#exGo').onclick = async (e) => {
   } catch (err) {
     $('#exProg').hidden = true;
     if (err && err.name !== 'AbortError' && err.message !== 'cancelled') toast('Export failed: ' + (err.message || err));
-  } finally { $('#exGo').disabled = false; S.abort = false; }
+  } finally { $('#exGo').disabled = false; S.abort = false; try { wake && wake.release(); } catch (e) {} wake = null; }
 };
 $('#exportBtn').onclick = openExport;
 dlgEx.addEventListener('close', () => (S.abort = true));
@@ -1216,10 +1339,16 @@ function renderBatch() {
   const ul = $('#batchList'); ul.innerHTML = '';
   const ps = photos();
   if (!ps.length) ul.innerHTML = '<li class="muted">No photos yet. Use Import Media on the Home tab. Videos are exported one at a time.</li>';
-  ps.forEach((p) => { const li = document.createElement('li'); li.innerHTML = `<img alt="" src="${p.thumb}"><span class="n">${esc(p.name)}</span><span class="st" data-id="${p.id}">${p.edited ? 'edited' : 'unedited'}</span>`; ul.appendChild(li); });
+  ps.forEach((p) => { const li = document.createElement('li'); li.innerHTML = `<input type="checkbox" class="bsel" data-id="${p.id}" aria-label="Select ${esc(p.name)}"><img alt="" src="${p.thumb}"><span class="n">${esc(p.name)}</span><span class="st" data-id="${p.id}">${p.edited ? 'edited' : 'unedited'}</span>`; ul.appendChild(li); });
   $('#zipAll').disabled = $('#applyAll').disabled = !ps.length;
   $('#folderAll').hidden = !window.showDirectoryPicker;
 }
+$('#copySet').onclick = () => { const c = cur(); if (!c) return toast('Open a photo first'); S.clip = { params: E.clone(c.params), autoAmt: c.autoAmt, water: c.water }; $('#pasteSet').disabled = false; toast('Settings copied. Tick photos below and press Paste.'); };
+$('#pasteSet').onclick = () => {
+  if (!S.clip) return; const ids = $$('#batchList .bsel:checked').map((x) => +x.dataset.id); if (!ids.length) return toast('Tick the photos to paste onto first');
+  photos().filter((p) => ids.includes(p.id)).forEach((p) => { p.params = E.clone(S.clip.params); p.autoAmt = S.clip.autoAmt; p.water = S.clip.water; p.inited = true; p.edited = true; p.hist = null; saveEdit(p); });
+  updateCounts(); renderBatch(); toast(`Pasted onto ${ids.length} photo${ids.length > 1 ? 's' : ''}`);
+};
 $('#applyAll').onclick = () => { const c = cur(); if (!c) return; photos().forEach((p) => { p.params = E.clone(c.params); p.inited = true; p.edited = true; p.hist = null; }); updateCounts(); renderBatch(); toast('Current settings applied to every photo'); };
 async function batchExport(toFolder) {
   const ps = photos(); if (!ps.length) return;
@@ -1276,6 +1405,72 @@ window.addEventListener('dragleave', (e) => { if (!hasFiles(e)) return; dragDept
 window.addEventListener('drop', (e) => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth = 0; $('#dropveil').hidden = true; setView('home'); addFiles(e.dataTransfer.files); });
 // open files handed over by the OS (installed PWA / file handlers), when supported
 if ('launchQueue' in window) window.launchQueue.setConsumer(async (p) => { const fs = []; for (const h of p.files || []) fs.push(await h.getFile()); addFiles(fs); });
+
+/* ---------------- remember edits per file, so reopening the same file offers them back ---------------- */
+const fileKey = (it) => (it.file && !it.sample ? `${it.name}|${it.file.size}|${it.file.lastModified}` : null);
+function loadSaved(it) { const k = fileKey(it); return k ? safeLS.get('dcl.e.' + k, null) : null; }
+function saveEdit(it) {
+  const k = fileKey(it); if (!k || !it.params) return;
+  safeLS.set('dcl.e.' + k, { p: it.params, a: it.autoAmt == null ? 100 : it.autoAmt, w: it.water || 'auto', e: it.edit, t: Date.now() });
+  const list = safeLS.get('dcl.elist', []).filter((x) => x !== k); list.push(k);
+  while (list.length > 60) { try { localStorage.removeItem('dcl.e.' + list.shift()); } catch (e) {} }
+  safeLS.set('dcl.elist', list);
+}
+function restoreSaved(it) {
+  const sv = it.saved; if (!sv) return;
+  it.params = Object.assign(E.neutralParams(), E.sanitizeParams(sv.p)); it.autoAmt = sv.a; it.water = sv.w || 'auto';
+  if (sv.e && sv.e.crop) { it.edit = sanitizeEdit(sv.e); if (it.kind === 'video') applyVideoPrefs(it); }
+  it.inited = true; it.edited = true; it.hist = null; S.beforeKey = '';
+  if (cur() === it) { syncUI(); updateCropMode(); requestRender(); hist(it); updateUndoBtns(); }
+  updateCounts(); toast('Previous edit restored');
+}
+
+/* ---------------- zoom and pan on the preview ---------------- */
+S.z = 1; S.tx = 0; S.ty = 0;
+function applyView() {
+  const z = S.z; cmp.style.transform = z === 1 ? '' : `translate(${S.tx}px,${S.ty}px) scale(${z})`;
+  cmp.classList.toggle('zoomed', z > 1);
+}
+function setZoom(nz, cx, cy) {   // cx, cy: client point that stays put
+  const r = stage.getBoundingClientRect(), mx = r.left + r.width / 2, my = r.top + r.height / 2;
+  nz = clamp(nz, 1, 8); if (cx == null) { cx = mx; cy = my; }
+  const px = (cx - mx - S.tx) / S.z, py = (cy - my - S.ty) / S.z;
+  S.z = nz; S.tx = cx - mx - px * nz; S.ty = cy - my - py * nz;
+  const lx = cmp.offsetWidth * nz / 2, ly = cmp.offsetHeight * nz / 2; S.tx = clamp(S.tx, -lx, lx); S.ty = clamp(S.ty, -ly, ly);
+  if (nz === 1) { S.tx = 0; S.ty = 0; }
+  applyView();
+}
+function resetZoom() { S.z = 1; S.tx = S.ty = 0; applyView(); }
+stage.addEventListener('wheel', (e) => { if (S.cropMode || !cur()) return; e.preventDefault(); setZoom(S.z * Math.exp(-e.deltaY * 0.0018), e.clientX, e.clientY); }, { passive: false });
+$('#zIn').onclick = () => setZoom(S.z * 1.5); $('#zOut').onclick = () => setZoom(S.z / 1.5); $('#zFit').onclick = resetZoom;
+$('#z100').onclick = () => { if (cA.width && cmp.offsetWidth) setZoom(cA.width / (cmp.offsetWidth / (S.mode === 'side' ? 2 : 1))); };
+let panning = null;
+cmp.addEventListener('pointerdown', (e) => {
+  if (S.z <= 1 || picking || S.cropMode || e.target.closest('.handle')) return;
+  panning = { x: e.clientX, y: e.clientY, tx: S.tx, ty: S.ty }; cmp.classList.add('panning'); cmp.setPointerCapture(e.pointerId); e.stopImmediatePropagation();
+}, true);
+cmp.addEventListener('pointermove', (e) => { if (!panning) return; S.tx = panning.tx + e.clientX - panning.x; S.ty = panning.ty + e.clientY - panning.y; setZoom(S.z, null, null, true); });
+['pointerup', 'pointercancel'].forEach((ev) => cmp.addEventListener(ev, () => { panning = null; cmp.classList.remove('panning'); }));
+
+/* ---------------- export size estimate, keep-awake, tour ---------------- */
+function updateEx() {
+  const it = cur(), el = $('#exEst'); if (!it) { el.textContent = ''; return; }
+  const full = outDims(it.edit, it.w, it.h);
+  if (it.kind === 'image') {
+    const o = exOpts(), lim = o.size || 8192, sc = Math.min(1, lim / Math.max(full.ow, full.oh)), w = Math.round(full.ow * sc), h = Math.round(full.oh * sc);
+    const bpp = o.type === 'image/png' ? 2.4 : o.type === 'image/webp' ? 0.1 + 0.5 * o.q * o.q * 0.5 : 0.12 + 0.55 * o.q * o.q;
+    el.textContent = `Result: ${w} × ${h} px, roughly ${fmtMB(w * h * bpp)}.`;
+  } else {
+    const side = +$('#vSize').value, sc = Math.min(1, side / Math.max(full.ow, full.oh)), w = (Math.round(full.ow * sc)) & ~1, h = (Math.round(full.oh * sc)) & ~1, tb = trimOf(it);
+    const dur = (tb.b - tb.a) / (it.edit.speed || 1), br = clamp(w * h * 30 * +$('#vQ').value, 2e6, 80e6);
+    el.textContent = `Result: ${w} × ${h} px, ${fmt(dur)} long, roughly ${fmtMB(br * dur / 8)}.`;
+  }
+}
+const fmtMB = (b) => (b > 1e9 ? (b / 1e9).toFixed(1) + ' GB' : Math.max(0.1, b / 1e6).toFixed(1) + ' MB');
+['exFmt', 'exQ', 'exSize', 'vSize', 'vQ'].forEach((id) => $('#' + id).addEventListener('input', updateEx));
+$('#tourBtn').onclick = () => { $('#dlgHelp').close(); $('#dlgTour').showModal(); };
+$('#dlgTour').addEventListener('close', () => safeLS.set('dcl.tour', true));
+setTimeout(() => { if (!safeLS.get('dcl.tour', false) && !document.querySelector('dialog[open]')) $('#dlgTour').showModal(); }, 1800);
 
 // offline use: cache the app files (not your media) once the page has loaded over http(s)
 if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));

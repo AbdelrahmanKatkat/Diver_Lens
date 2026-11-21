@@ -65,6 +65,7 @@
 
   <section class="center">
     <div class="stage glass neon" id="stage">
+      <div class="zoomctl" role="group" aria-label="Zoom"><button id="zOut" title="Zoom out" aria-label="Zoom out">&minus;</button><button id="zFit" title="Fit to window">Fit</button><button id="z100" title="Actual pixels (100%)">100%</button><button id="zIn" title="Zoom in" aria-label="Zoom in">+</button></div>
       <div class="cmp" id="cmp">
         <canvas id="cBefore"></canvas>
         <canvas id="cAfter"></canvas>
@@ -128,6 +129,10 @@
       <div id="rt-cc">
         <section class="rsec" id="autoCard">
           <h3 class="rh">Auto Enhance</h3>
+          <small class="lbl">Water conditions</small>
+          <div class="seg wrap" id="waterSeg" role="group" aria-label="Water conditions">
+            <button data-w="auto" class="on">Auto</button><button data-w="blue">Blue</button><button data-w="green">Green</button><button data-w="turbid">Turbid</button><button data-w="shallow">Shallow</button><button data-w="corrected">Corrected</button>
+          </div>
           <button class="btn primary wide" id="autoBtn"><svg class="i" data-i="wand"></svg> Auto Enhance</button>
           <div id="sl-auto"></div>
           <p class="hint" id="autoNote"></p>
@@ -202,6 +207,8 @@
     <p class="muted">Apply the current settings to every photo you opened and export them all in one go. Photos are processed on this device.</p>
     <div class="row">
       <button class="btn" id="applyAll"><svg class="i" data-i="layers"></svg> Apply current settings to all photos</button>
+      <button class="btn" id="copySet" title="Copy the settings of the photo you are editing">Copy settings</button>
+      <button class="btn" id="pasteSet" title="Paste the copied settings onto the ticked photos" disabled>Paste to ticked</button>
       <button class="btn primary" id="zipAll"><svg class="i" data-i="export"></svg> Export all as ZIP</button>
       <button class="btn" id="folderAll" hidden><svg class="i" data-i="folder"></svg> Save to a folder…</button>
     </div>
@@ -243,8 +250,10 @@
       <label>Quality
         <select id="vQ"><option value="0.12" selected>High</option><option value="0.07">Standard (smaller file)</option><option value="0.2">Maximum</option></select>
       </label>
+      <label class="chk"><input type="checkbox" id="vCompat"> Compatibility mode (slower, seek-based)</label>
       <p class="muted" id="vNote">Saved as <b>MP4 (H.264 + AAC)</b>, which plays everywhere. Frames are rendered on your graphics card, faster than real time. Keep this tab visible until it finishes.</p>
     </div>
+    <p class="muted" id="exEst" aria-live="polite"></p>
     <div class="progress" id="exProg" hidden><i></i><span></span></div>
     <div class="row end">
       <button value="cancel" class="btn" id="exCancel">Close</button>
@@ -253,11 +262,33 @@
   </form>
 </dialog>
 
+<dialog id="dlgName" class="dlg glass">
+  <form method="dialog" class="dlg-in">
+    <h2>Name this preset</h2>
+    <input id="nameIn" type="text" maxlength="40" value="My look" aria-label="Preset name" class="txt">
+    <div class="row end"><button class="btn" value="cancel">Cancel</button><button class="btn primary" id="nameOk" value="ok" type="button">Save</button></div>
+  </form>
+</dialog>
+
+<dialog id="dlgTour" class="dlg glass">
+  <form method="dialog" class="dlg-in">
+    <h2>Welcome to Dive ColorLab</h2>
+    <ol class="tour">
+      <li><b>Import.</b> Click <em>Import Media</em> or drop photos and videos on the page. They open on your device and are never uploaded.</li>
+      <li><b>Correct.</b> Press <em>Auto Enhance</em>, tell it the <em>Water conditions</em> if you know them, and use <em>Amount</em> to taste. <em>Pick grey</em> fixes a stubborn cast.</li>
+      <li><b>Compare.</b> Drag the divider, or hold <kbd>\</kbd> to see the original. Scroll to zoom in.</li>
+      <li><b>Export.</b> Save the result back to your computer. Undo with <kbd>Ctrl</kbd>+<kbd>Z</kbd> any time.</li>
+    </ol>
+    <div class="row end"><button class="btn primary" value="ok">Got it</button></div>
+  </form>
+</dialog>
+
 <dialog id="dlgHelp" class="dlg glass">
   <form method="dialog" class="dlg-in">
     <h2>About Dive ColorLab</h2>
     <p>A static, privacy-friendly underwater colour lab. Open photos and videos from your computer, correct them, and export the result. Nothing leaves your device.</p>
     <p class="muted">Supported: JPG, PNG, WebP, AVIF, GIF (first frame) and browser-playable video (MP4, WebM, MOV on some browsers). RAW and HEIC are not decodable by browsers.</p>
+    <p><button class="btn sm" id="tourBtn" type="button">Take the tour</button></p>
     <h3>Keyboard shortcuts</h3>
     <ul class="keys">
       <li><kbd>Ctrl</kbd>+<kbd>Z</kbd> undo &nbsp; <kbd>Ctrl</kbd>+<kbd>Y</kbd> redo</li>

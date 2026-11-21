@@ -274,3 +274,25 @@ body.focus .stage{height:clamp(360px,60vh,720px)}
 button:focus-visible,.pr:focus-visible,[role=button]:focus-visible,.th:focus-visible,.dot:focus-visible,.tab:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 @media (max-width:820px){.btn,.tab,.seg button{min-height:44px}}
 .hbtns .auto{white-space:nowrap}
+
+/* ---- zoom, reset buttons, thumbnails, dialogs ---- */
+.zoomctl{position:absolute;right:10px;top:10px;z-index:6;display:flex;gap:4px;padding:4px;border-radius:10px;background:rgba(5,25,50,.72);backdrop-filter:blur(6px)}
+.zoomctl button{min-width:30px;height:28px;border-radius:7px;border:1px solid var(--border);background:transparent;color:#fff;font-size:13px;padding:0 6px}
+.zoomctl button:hover{border-color:var(--cyan)}
+.cmp.zoomed{cursor:grab}.cmp.zoomed.panning{cursor:grabbing}
+.sl label{position:relative}
+.sl .rs{position:absolute;right:-6px;top:50%;transform:translateY(-50%);width:20px;height:20px;border-radius:50%;border:1px solid var(--border);background:var(--panel2);color:var(--text);font-size:12px;line-height:1;padding:0;opacity:0;transition:opacity .15s}
+.sl:hover .rs,.sl:focus-within .rs,.sl .rs:focus-visible{opacity:1}
+@media (hover:none){.sl .rs{opacity:.65}}
+.th .open{position:absolute;inset:0;width:100%;height:100%;background:transparent;border:0;cursor:pointer;z-index:1;padding:0}
+.th .x{z-index:2}
+.th:focus-within{outline:2px solid var(--accent);outline-offset:2px}
+.pr .pth{width:100%;height:56px;object-fit:cover;border-radius:8px;display:block;margin-bottom:6px}
+.toast.act{pointer-events:auto}
+.toast button{margin-left:12px;padding:4px 12px;border-radius:8px;border:1px solid var(--accent);background:var(--accent);color:var(--accent-t);font-weight:700}
+.txt{width:100%;padding:10px 12px;border-radius:10px;border:1.5px solid var(--border);background:var(--field);color:var(--text);font:inherit;margin:8px 0 14px}
+.tour{margin:8px 0 14px;padding-left:20px;line-height:1.5}.tour li{margin:8px 0}
+.batch-list .bsel{width:18px;height:18px;margin-right:8px}
+
+.chk{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted);margin:8px 0}
+@media (max-width:820px){.actions{position:sticky;bottom:0;z-index:20;backdrop-filter:blur(8px)}}
