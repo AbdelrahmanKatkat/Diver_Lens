@@ -80,6 +80,18 @@ const normRot = (r) => ((Math.round(r / 90) * 90) % 360 + 360) % 360;
 const isIdentity = (e) => e.crop.x < 1e-4 && e.crop.y < 1e-4 && e.crop.w > 0.9999 && e.crop.h > 0.9999 && !normRot(e.rot) && !e.fx && !e.fy;
 const geoKey = (e) => `${e.crop.x.toFixed(4)},${e.crop.y.toFixed(4)},${e.crop.w.toFixed(4)},${e.crop.h.toFixed(4)},${normRot(e.rot)},${+e.fx},${+e.fy}`;
 // rotated (uncropped) size rw x rh and cropped output size ow x oh for a source of sw x sh
+function sanitizeEdit(s) {
+  const e = defaultEdit(), n = (v, lo, hi, d) => (typeof v === 'number' && isFinite(v) ? Math.min(hi, Math.max(lo, v)) : d);
+  if (!s || typeof s !== 'object') return e;
+  const c = s.crop || {};
+  const w = n(c.w, 0.02, 1, 1), h = n(c.h, 0.02, 1, 1);
+  e.crop = { x: n(c.x, 0, 1 - w, 0), y: n(c.y, 0, 1 - h, 0), w, h };
+  e.rot = n(s.rot, -360, 360, 0); e.fx = s.fx === true; e.fy = s.fy === true;
+  e.aspect = typeof s.aspect === 'string' ? s.aspect.slice(0, 8) : 'free';
+  e.tIn = n(s.tIn, 0, 1e6, 0); e.tOut = s.tOut == null ? null : n(s.tOut, 0, 1e6, null);
+  e.speed = n(s.speed, 0.25, 4, 1); e.fadeIn = n(s.fadeIn, 0, 60, 0); e.fadeOut = n(s.fadeOut, 0, 60, 0); e.mute = s.mute === true;
+  return e;
+}
 function outDims(e, sw, sh) {
   const swap = normRot(e.rot) % 180 !== 0, rw = swap ? sh : sw, rh = swap ? sw : sh;
   return { rw, rh, ow: Math.max(2, Math.round(e.crop.w * rw)), oh: Math.max(2, Math.round(e.crop.h * rh)) };
@@ -97,7 +109,21 @@ function drawGeo(ctx, src, sw, sh, e, ow, oh) {
   ctx.drawImage(src, -sw / 2, -sh / 2, sw, sh);
   ctx.setTransform(1, 0, 0, 1, 0, 0);
 }
-const trimOf = (it) => { const a = it.edit.tIn || 0, b = Math.min(it.duration || 0, it.edit.tOut == null ? it.duration : it.edit.tOut); return { a, b: Math.max(a + 0.05, b) }; };
+// clip length read live from the element (some files report it late or only roughly when first opened)
+function clipLen(it) {
+  const d = it.el.duration; if (isFinite(d) && d > 0) return d;
+  try { const s = it.el.seekable; if (s && s.length) return s.end(s.length - 1); } catch (e) { /* not seekable yet */ }
+  return it.duration || 0;
+}
+// duration of a separate export element; falls back to what the loaded clip reported, and refuses to run on an unknown length
+function srcDuration(v, it) {
+  let d = v.duration;
+  if (!(isFinite(d) && d > 0)) { try { const s = v.seekable; if (s && s.length) d = s.end(s.length - 1); } catch (e) {} }
+  if (!(isFinite(d) && d > 0)) d = clipLen(it);
+  if (!(isFinite(d) && d > 0)) throw new Error('could not read the length of this video');
+  return d;
+}
+const trimOf = (it) => { const D = clipLen(it), a = Math.min(it.edit.tIn || 0, D), b = Math.min(D, it.edit.tOut == null ? D : it.edit.tOut); return { a, b: Math.max(a + 0.05, b) }; };
 // 0..1 brightness factor for fade in / out at output time t of a clip D seconds long
 const fadeAt = (e, t, D) => Math.max(0, Math.min(1, e.fadeIn > 0 ? t / e.fadeIn : 1, e.fadeOut > 0 ? (D - t) / e.fadeOut : 1));
 // size to process at: about `base` px on the long edge of the *output*, at most `cap` px on the source
@@ -108,7 +134,7 @@ function procDims(it, e, base, cap) {
 
 /* ---------------- elements ---------------- */
 const stage = $('#stage'), cmp = $('#cmp'), cB = $('#cBefore'), cA = $('#cAfter');
-const xB = cB.getContext('2d'), xA = cA.getContext('2d', { willReadFrequently: true });
+const xB = cB.getContext('2d'), xA = cA.getContext('2d');
 const handle = $('#handle'), playBtn = $('#playBtn'), seek = $('#seek'), timeTxt = $('#timeTxt');
 const toastEl = $('#toast');
 
@@ -119,6 +145,7 @@ const safeLS = {
   get: (k, d) => { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
   set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} },
 };
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const baseName = (n) => n.replace(/\.[^.]+$/, '');
 const slug = (n) => baseName(n).replace(/[^\w\-]+/g, '-').replace(/^-+|-+$/g, '') || 'media';
 
@@ -140,14 +167,17 @@ async function loadImageItem(src, name, extra = {}) {
   img.decoding = 'async';
   img.src = src;
   await img.decode();
-  return { id: S.uid++, kind: 'image', name, url: src, thumb: src, el: img, w: img.naturalWidth, h: img.naturalHeight, params: E.defaultParams(), edit: defaultEdit(), edited: false, ...extra };
+  // small thumbnail for the filmstrip, so many big photos do not keep full-size copies on screen
+  let thumb = src;
+  try { const tw = 240, th = Math.max(1, Math.round(240 * img.naturalHeight / img.naturalWidth)), tc = document.createElement('canvas'); tc.width = tw; tc.height = th; tc.getContext('2d').drawImage(img, 0, 0, tw, th); thumb = tc.toDataURL('image/jpeg', 0.75); } catch (e) { /* keep the full image */ }
+  return { id: S.uid++, kind: 'image', name, url: src, thumb, el: img, w: img.naturalWidth, h: img.naturalHeight, params: E.defaultParams(), edit: defaultEdit(), edited: false, ...extra };
 }
 async function loadVideoItem(src, name) {
   const v = document.createElement('video');
   v.playsInline = true; v.preload = 'auto'; v.loop = false; v.src = src; v.crossOrigin = 'anonymous';
   Object.assign(v.style, { position: 'fixed', left: '-9999px', width: '2px', height: '2px', opacity: '0', pointerEvents: 'none' });
   document.body.appendChild(v);
-  await once(v, 'loadeddata');
+  try { await once(v, 'loadeddata'); } catch (e) { v.remove(); throw e; }   // do not leave a dead element behind
   const item = { id: S.uid++, kind: 'video', name, url: src, el: v, w: v.videoWidth, h: v.videoHeight, duration: v.duration, params: E.defaultParams(), edit: defaultEdit(), edited: false };
   // thumbnail + statistics from a representative frame
   v.currentTime = Math.min(1, (v.duration || 1) * 0.1);
@@ -161,6 +191,7 @@ async function loadVideoItem(src, name) {
   t.getContext('2d').drawImage(v, 0, 0, t.width, t.height);
   item.thumb = t.toDataURL('image/jpeg', 0.7);
   v.currentTime = 0;
+  v.addEventListener('durationchange', () => { if (isFinite(v.duration) && v.duration > 0) { item.duration = v.duration; if (cur() === item) { updateTime(); if (refs.e_tIn) { refs.e_tIn(); refs.e_tOut(); } } } });
   v.addEventListener('timeupdate', () => { if (cur() === item) { if (!v.paused && v.currentTime >= trimOf(item).b) v.pause(); updateTime(); } });
   v.addEventListener('seeked', () => { if (cur() === item) { drawVideoFrame(); updateTime(); } });
   v.addEventListener('play', () => { if (cur() === item) { setIcon($('svg', playBtn), 'pause'); videoLoop(); } });
@@ -226,7 +257,8 @@ async function selectItem(i) {
     S.work = { w, h, c, x, out: x.createImageData(w, h), mid, midx };
   }
   S.beforeKey = '';
-  if (!it.inited) { it.inited = true; it.params = Object.assign(E.neutralParams(), E.autoParams(it.st)); }
+  if (!it.inited) { it.inited = true; it.params = Object.assign(E.neutralParams(), E.autoParams(it.st)); it.autoAmt = 100; }
+  commitNow(); hist(it); updateUndoBtns();
   busy();
   $('#playbar').classList.toggle('photo', it.kind === 'image');
   setIcon($('svg', playBtn), 'play');
@@ -245,7 +277,10 @@ function applyVideoPrefs(it) {
 function requestRender() { if (S.raf) return; S.raf = requestAnimationFrame(() => { S.raf = 0; render(); }); }
 let glr, glx;   // preview renderer / export renderer (WebGL2); null = CPU fallback
 const getGL = () => (glr === undefined ? (glr = GLR.create()) : glr);
-const getExportGL = () => (glx === undefined ? (glx = GLR.create()) : glx);
+// after a GPU error (for example a lost context) draw this frame on the CPU and try a fresh renderer, at most three times
+let gpuFails = 0;
+function gpuFailed() { try { glr && glr.dispose(); } catch (e) {} glr = ++gpuFails > 3 ? null : undefined; }
+const getExportGL =() => (glx === undefined ? (glx = GLR.create()) : glx);
 function render() {
   const it = cur(); if (!it || !S.work) return;
   if (it.kind === 'video') { drawVideoFrame(); return; }
@@ -258,7 +293,7 @@ function render() {
       if (g.srcItem !== it) { g.upload(it.el); g.srcItem = it; }
       g.setSize(pd.w, pd.h); g.render(it.params, it.st, E.getLevels(it.params, it.st, src, w, h));
       present(it, g.canvas, pd.w, pd.h, e); return;
-    } catch (err) { console.warn('GPU render failed, using CPU', err); glr = null; }
+    } catch (err) { console.warn('GPU render failed, using CPU', err); gpuFailed(); }
   }
   E.process(src, out.data, w, h, it.params, it.st);
   S.work.midx.putImageData(out, 0, 0);
@@ -271,6 +306,7 @@ function present(it, pcv, sw, sh, e) {
   const o = outDims(e, sw, sh);
   if (cA.width !== o.ow || cA.height !== o.oh) { cA.width = cB.width = o.ow; cA.height = cB.height = o.oh; S.beforeKey = ''; fit(); }
   drawGeo(xA, pcv, sw, sh, e, o.ow, o.oh);
+  histSoon();
   if (it.kind === 'video') drawGeo(xB, it.el, it.w, it.h, e, o.ow, o.oh);
   else { const k = it.id + '|' + geoKey(e) + '|' + o.ow; if (S.beforeKey !== k) { drawGeo(xB, it.el, it.w, it.h, e, o.ow, o.oh); S.beforeKey = k; } }
 }
@@ -286,7 +322,7 @@ function drawVideoFrame() {
       g.setSize(pd.w, pd.h); g.upload(it.el); g.srcItem = it;
       g.render(it.params, it.st, E.getLevels(it.params, it.st, null, 0, 0));
       present(it, g.canvas, pd.w, pd.h, e); ok = true;
-    } catch (err) { console.warn('GPU render failed, using CPU', err); glr = null; }
+    } catch (err) { console.warn('GPU render failed, using CPU', err); gpuFailed(); }
   }
   if (!ok) {
     x.drawImage(it.el, 0, 0, w, h);
@@ -306,7 +342,7 @@ function videoLoop() {
   const step = () => {
     if (cur() !== it || v.paused || v.ended) return;
     if (v.currentTime >= trimOf(it).b) { v.pause(); drawVideoFrame(); updateTime(); return; }
-    drawVideoFrame();
+    try { drawVideoFrame(); } catch (e) { console.warn('frame draw failed', e); }   // one bad frame must not stop the preview
     if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(step); else requestAnimationFrame(step);
   };
   step();
@@ -353,7 +389,7 @@ playBtn.onclick = () => {
   const { a, b } = trimOf(it); if (it.el.currentTime >= b - 0.05 || it.el.currentTime < a - 0.05) it.el.currentTime = a;
   it.el.play();
 };
-seek.oninput = () => { const it = cur(); if (it && it.kind === 'video') { const { a, b } = trimOf(it); it.el.currentTime = a + (seek.value / 1000) * (b - a); } };
+seek.oninput = () => { const it = cur(); if (it && it.kind === 'video') { const { a, b } = trimOf(it), t = a + (seek.value / 1000) * (b - a); if (isFinite(t)) it.el.currentTime = t; } };
 $('#muteBtn').onclick = () => { const it = cur(); if (it && it.kind === 'video') { it.userMuted = !it.userMuted; applyVideoPrefs(it); setIcon($('#muteBtn svg'), it.el.muted ? 'mute' : 'volume'); } };
 $('#fsBtn').onclick = () => { if (document.fullscreenElement) document.exitFullscreen(); else if (stage.requestFullscreen) stage.requestFullscreen(); };
 document.addEventListener('fullscreenchange', () => setTimeout(fit, 50));
@@ -365,7 +401,7 @@ function renderFilm() {
     if (S.filter && it.kind !== S.filter) return;
     const b = document.createElement('div');
     b.className = 'th' + (i === S.cur ? ' on' : ''); b.tabIndex = 0; b.setAttribute('role', 'button'); b.setAttribute('aria-label', 'Open ' + it.name);
-    b.innerHTML = `<img alt="" src="${it.thumb}"><span class="k">${it.kind === 'video' ? 'Video' : it.sample ? it.name : 'Photo'}</span>${it.sample ? '' : `<button class="x" aria-label="Remove ${it.name}">${icon('x')}</button>`}`;
+    b.innerHTML = `<img alt="" src="${it.thumb}"><span class="k">${it.kind === 'video' ? 'Video' : it.sample ? esc(it.name) : 'Photo'}</span>${it.sample ? '' : `<button class="x" aria-label="Remove ${esc(it.name)}">${icon('x')}</button>`}`;
     b.onclick = (e) => { if (e.target.closest('.x')) { removeItem(i); return; } selectItem(i); };
     b.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectItem(i); } };
     strip.appendChild(b);
@@ -439,11 +475,18 @@ function slider(def, get, set, container) {
   container.appendChild(row);
   return () => { rng.max = mx(); const v = get(); rng.value = v; num.value = sv(v); };
 }
-function paramSet(k) { return (v) => { cur().params[k] = v; changed(); }; }
+const TOOL_OF = { castAmt: 'cast', dehazeAmt: 'dehaze', backAmt: 'backscatter', noiseAmt: 'noise' };
+function paramSet(k) {
+  return (v) => {
+    const p = cur().params; p[k] = v;
+    if (TOOL_OF[k] && v > 0 && !p[TOOL_OF[k]]) { p[TOOL_OF[k]] = true; refs['t_' + TOOL_OF[k]](); }   // moving a strength slider switches its tool on
+    changed();
+  };
+}
 function changed() {
   const it = cur(); if (!it) return;
   it.edited = true; S.quick = null; $$('#quick button').forEach((b) => b.classList.remove('on'));
-  markStep('corrected'); updateCounts(); requestRender(); drawCurve();
+  markStep('corrected'); updateCounts(); requestRender(); drawCurve(); commit();
 }
 
 function buildControls() {
@@ -674,7 +717,7 @@ const QUICK = [
 function applyPatch(patch) {
   const it = cur(); if (!it) { toast('Open a photo or video first'); return; }
   Object.assign(it.params, JSON.parse(JSON.stringify(patch)));
-  syncUI(); requestRender(); it.edited = true; markStep('corrected'); updateCounts();
+  syncUI(); requestRender(); it.edited = true; markStep('corrected'); updateCounts(); commit();
 }
 function buildQuick() {
   const ul = $('#quick');
@@ -701,7 +744,7 @@ function applyPreset(p) {
   const it = cur(); if (!it) return toast('Open a photo or video first');
   const base = E.neutralParams();
   it.params = Object.assign(base, E.clone(p));
-  syncUI(); requestRender(); it.edited = true; markStep('corrected'); updateCounts();
+  syncUI(); requestRender(); it.edited = true; markStep('corrected'); updateCounts(); commit();
 }
 function renderPresets() {
   [$('#presetGrid'), $('#presetGrid2')].forEach((grid) => {
@@ -727,7 +770,114 @@ function savePreset() {
 }
 $('#savePreset').onclick = $('#savePreset2').onclick = savePreset;
 
-$('#resetBtn').onclick = () => { const it = cur(); if (!it) return; it.params = E.neutralParams(); S.quick = null; $$('#quick button').forEach((b) => b.classList.remove('on')); syncUI(); requestRender(); toast('Reset to the untouched original'); };
+$('#resetBtn').onclick = () => { const it = cur(); if (!it) return; it.params = E.neutralParams(); it.autoAmt = 100; S.quick = null; $$('#quick button').forEach((b) => b.classList.remove('on')); syncUI(); requestRender(); commit(); toast('Reset to the untouched original. Undo brings it back.'); };
+
+/* ---------------- Auto amount, undo / redo, grey-point picker, histogram, pro tools ---------------- */
+function applyAuto(amt) {
+  const it = cur(); if (!it) return toast('Open a photo or video first');
+  it.autoAmt = amt;
+  it.params = Object.assign(E.neutralParams(), E.autoParams(it.st, amt / 100));
+  it.edited = true; S.quick = null; $$('#quick button').forEach((b) => b.classList.remove('on'));
+  markStep('corrected'); updateCounts(); syncUI(); requestRender(); commit();
+}
+$('#autoBtn').onclick = () => { applyAuto(100); toast('Auto Enhance applied. Use Amount to dial it up or down.'); };
+refs.autoAmt = slider({ k: 'autoAmt', l: 'Amount', min: 0, max: 150, reset: 100, fmt: (v) => Math.round(v) + '%' }, () => (cur().autoAmt == null ? 100 : cur().autoAmt), (v) => applyAuto(v), $('#sl-auto'));
+refs.autoNote = () => {
+  const it = cur(), n = $('#autoNote'); if (!it || !it.st) { n.textContent = ''; return; }
+  const sc = E.sceneOf(it.st), bits = [];
+  if (sc.conf < 0.15) bits.push('Colours already look balanced, so Auto stays gentle.');
+  else bits.push(sc.blueExcess > 0.15 ? 'Blue water detected.' : sc.greenExcess > 0.15 ? 'Green water detected.' : 'Water colour cast detected.');
+  if (sc.redLoss > 0.85) bits.push('Almost no red is left at this depth, so the recovery is limited.');
+  else if (sc.redLoss > 0.5) bits.push('Much of the red is lost.');
+  if (sc.dark) bits.push('A dark scene: noise reduction is on.');
+  n.textContent = bits.join(' ');
+};
+
+// history: one snapshot of the settings per finished change, per picture
+const H_MAX = 80; let commitT = 0, commitItem = null;
+const snap = (it) => JSON.stringify({ p: it.params, a: it.autoAmt == null ? 100 : it.autoAmt });
+const hist = (it) => it.hist || (it.hist = { s: [snap(it)], i: 0 });
+function commit() { commitItem = cur(); clearTimeout(commitT); commitT = setTimeout(commitNow, 350); }
+function commitNow() {
+  clearTimeout(commitT); const it = commitItem || cur(); commitItem = null; if (!it) return;
+  const h = hist(it), j = snap(it);
+  if (h.s[h.i] === j) return;
+  h.s.length = h.i + 1; h.s.push(j); if (h.s.length > H_MAX) h.s.shift(); h.i = h.s.length - 1; updateUndoBtns();
+}
+function updateUndoBtns() { const it = cur(), h = it && it.hist; $('#undoBtn').disabled = !h || h.i <= 0; $('#redoBtn').disabled = !h || h.i >= h.s.length - 1; }
+function undoRedo(d) {
+  const it = cur(); if (!it) return; commitNow();
+  const h = hist(it), n = h.i + d; if (n < 0 || n >= h.s.length) return;
+  h.i = n; const o = JSON.parse(h.s[n]); it.params = o.p; it.autoAmt = o.a; it.edited = true; S.quick = null;
+  syncUI(); requestRender(); updateUndoBtns();
+}
+$('#undoBtn').onclick = () => undoRedo(-1); $('#redoBtn').onclick = () => undoRedo(1);
+
+// grey-point picker: click something that should be neutral, the temperature / tint are adjusted so it is
+let picking = false;
+function setPick(on) { picking = on; cmp.classList.toggle('picking', on); $('#pickWB').classList.toggle('on', on); if (on) toast('Click something that should be grey or white'); }
+$('#pickWB').onclick = () => setPick(!picking);
+cmp.addEventListener('pointerdown', (e) => {
+  if (!picking) return; e.preventDefault(); e.stopPropagation();
+  const it = cur(); if (!it) return setPick(false);
+  const r = cA.getBoundingClientRect(), px = Math.round((e.clientX - r.left) / r.width * cA.width), py = Math.round((e.clientY - r.top) / r.height * cA.height), k = 3;
+  const x0 = clamp(px - k, 0, cA.width - 1), y0 = clamp(py - k, 0, cA.height - 1), w = Math.min(2 * k + 1, cA.width - x0), h = Math.min(2 * k + 1, cA.height - y0);
+  let R = 0, G = 0, B = 0, n = 0;
+  try { const d = xA.getImageData(x0, y0, w, h).data; for (let i = 0; i < d.length; i += 4) { R += d[i]; G += d[i + 1]; B += d[i + 2]; n++; } } catch (err) { return setPick(false); }
+  R = R / n; G = G / n; B = B / n;
+  if (n < 1 || (R + G + B) / 3 < 14 || (R + G + B) / 3 > 245) { toast('Pick a mid-tone area, not pure black or white'); return; }
+  if (R < G * 0.12 || B < G * 0.12) { toast('That spot has almost no red or blue to balance. Pick a greyer area.'); return; }
+  const p = it.params, gr0 = 1 + p.temp * 0.004, gb0 = 1 - p.temp * 0.004, gg0 = 1 + p.tint * 0.003;
+  const q = (gr0 / gb0) * (B / Math.max(R, 1)), T = clamp((q - 1) / (q + 1) / 0.004, -100, 100);
+  const gr1 = 1 + T * 0.004, gb1 = 1 - T * 0.004, avg = ((R * gr1 / gr0) + (B * gb1 / gb0)) / 2;
+  p.temp = Math.round(T); p.tint = Math.round(clamp(((gg0 * avg / Math.max(G, 1)) - 1) / 0.003, -60, 60));
+  setPick(false); changed(); syncUI(); toast('White point set. Click again to refine it.');
+}, true);
+
+// histogram of the corrected picture; warns when red is missing
+const histCv = $('#histCv'), hx = histCv.getContext('2d'), hs = document.createElement('canvas'), hsx = hs.getContext('2d', { willReadFrequently: true });
+let histT = 0;
+function histSoon() { const t = performance.now(); if (t - histT < 180 || S.rt !== 'cc') return; histT = t; requestAnimationFrame(drawHist); }
+function drawHist() {
+  if (!cA.width) return;
+  const w = 96, h = Math.max(2, Math.round(96 * cA.height / cA.width)); hs.width = w; hs.height = h; hsx.drawImage(cA, 0, 0, w, h);
+  let d; try { d = hsx.getImageData(0, 0, w, h).data; } catch (e) { return; }
+  const bins = [new Float32Array(64), new Float32Array(64), new Float32Array(64)];
+  for (let i = 0; i < d.length; i += 4) { bins[0][d[i] >> 2]++; bins[1][d[i + 1] >> 2]++; bins[2][d[i + 2] >> 2]++; }
+  const W = histCv.width, H = histCv.height, mx = Math.max(1, ...bins.map((b) => Math.max(...b))) * 0.9;
+  hx.clearRect(0, 0, W, H); hx.globalCompositeOperation = 'lighter';
+  ['rgba(255,70,70,.8)', 'rgba(60,230,100,.8)', 'rgba(70,150,255,.8)'].forEach((col, c) => {
+    hx.fillStyle = col; hx.beginPath(); hx.moveTo(0, H);
+    for (let i = 0; i < 64; i++) hx.lineTo(i * W / 63, H - Math.min(1, bins[c][i] / mx) * H);
+    hx.lineTo(W, H); hx.closePath(); hx.fill();
+  });
+  hx.globalCompositeOperation = 'source-over';
+}
+
+// pro tools (curves, wheels, HSL) stay out of the way until asked for
+(function proTools() {
+  const panels = document.querySelector('.panels'), bar = document.createElement('div'); bar.className = 'probar';
+  bar.innerHTML = '<span>Pro tools: Curves, Color Wheels, HSL</span><button class="btn sm" id="proBtn" aria-expanded="false"></button>';
+  panels.parentNode.insertBefore(bar, panels);
+  const btn = bar.querySelector('button');
+  const set = (open) => { panels.hidden = !open; btn.textContent = open ? 'Hide' : 'Show'; btn.setAttribute('aria-expanded', open); safeLS.set('dcl.pro', open); requestAnimationFrame(() => { fit(); sizeCurve(); drawCurve(); }); };
+  btn.onclick = () => set(panels.hidden);
+  set(!!safeLS.get('dcl.pro', false));
+})();
+
+// shortcuts
+let heldMode = null;
+window.addEventListener('keydown', (e) => {
+  const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName) && document.activeElement.type !== 'range';
+  if (typing || document.querySelector('dialog[open]')) return;
+  const mod = e.ctrlKey || e.metaKey, k = e.key.toLowerCase();
+  if (mod && k === 'z') { e.preventDefault(); undoRedo(e.shiftKey ? 1 : -1); }
+  else if (mod && k === 'y') { e.preventDefault(); undoRedo(1); }
+  else if (e.key === 'Escape' && picking) setPick(false);
+  else if (!mod && k === 'w' && cur()) { e.preventDefault(); setPick(!picking); }
+  else if (e.key === '\\' && !e.repeat && cur() && heldMode === null) { e.preventDefault(); heldMode = S.mode; setMode('orig'); }
+});
+window.addEventListener('keyup', (e) => { if (e.key === '\\' && heldMode !== null) { setMode(heldMode); heldMode = null; } });
 
 /* right-hand tabs */
 $$('#rtabs button').forEach((b) => (b.onclick = () => {
@@ -783,6 +933,7 @@ const EXT = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' };
 
 async function renderFull(item, maxSide) {
   const wk = prepare(item);   // fresh statistics + working-resolution data (levels are measured from this)
+  if (!item.inited) { item.inited = true; item.params = Object.assign(E.neutralParams(), E.autoParams(item.st)); }   // same look the editor would show
   const ed = item.edit, full = outDims(ed, item.w, item.h);
   // the size limit applies to the cropped result; the uncropped source is processed at most 8192 px wide
   const sc = Math.min(1, Math.min(maxSide || 8192, 8192) / Math.max(full.ow, full.oh), 8192 / Math.max(item.w, item.h));
@@ -795,7 +946,7 @@ async function renderFull(item, maxSide) {
       gx.render(item.params, item.st, E.getLevels(item.params, item.st, wk.src, wk.w, wk.h));
       drawGeo(res.getContext('2d'), gx.canvas, w, h, ed, o.ow, o.oh); gx.setSize(16, 16);
       return res;
-    } catch (e) { console.warn('GPU export failed, using CPU', e); glx = null; }
+    } catch (e) { console.warn('GPU export failed, using CPU', e); try { glx && glx.dispose(); } catch (e2) {} glx = undefined; }
   }
   const c = document.createElement('canvas'); c.width = w; c.height = h;
   const x = c.getContext('2d', { willReadFrequently: true });
@@ -816,7 +967,8 @@ async function exportVideoRealtime(item, prog) {
   if (!window.MediaRecorder) throw new Error('This browser cannot record video. Try Chrome, Edge or Firefox.');
   const v = document.createElement('video'); v.playsInline = true; v.preload = 'auto'; v.src = item.url;
   await once(v, 'loadeddata');
-  const ed = item.edit, tIn = ed.tIn || 0, tOut = Math.min(v.duration, ed.tOut == null ? v.duration : ed.tOut), D = (tOut - tIn) / ed.speed;
+  const vdur = srcDuration(v, item);
+  const ed = item.edit, tIn = ed.tIn || 0, tOut = Math.min(vdur, ed.tOut == null ? vdur : ed.tOut), D = (tOut - tIn) / ed.speed;
   const full = outDims(ed, item.w, item.h), sc = Math.min(1, WORK_VID / Math.max(full.ow, full.oh));
   const sw = Math.max(2, Math.round(item.w * sc)), sh = Math.max(2, Math.round(item.h * sc)), od = outDims(ed, sw, sh), w = od.ow & ~1, h = od.oh & ~1;
   const pc = document.createElement('canvas'); pc.width = sw; pc.height = sh;   // colour-corrected full frame
@@ -876,13 +1028,14 @@ async function detectFps(v) {
     v.requestVideoFrameCallback(cb); v.play().catch(fin); setTimeout(fin, 2500);
   });
 }
+let streamW = null;   // open file stream of an MP4 export in progress (aborted if the export fails)
 const canMP4 = () => !!(window.VideoEncoder && window.Mp4Muxer && GLR.supported());
 
-async function exportVideoMP4(item, prog) {
+async function exportVideoMP4(item, prog, handle) {
   const maxSide = +$('#vSize').value, bpp = +$('#vQ').value;
   const v = document.createElement('video'); v.muted = true; v.playsInline = true; v.preload = 'auto'; v.src = item.url;
   await once(v, 'loadeddata');
-  const dur = v.duration, fps = clamp(Math.round(await detectFps(v)), 1, 30);
+  const dur = srcDuration(v, item), fps = clamp(Math.round(await detectFps(v)), 1, 30);
   const ed = item.edit, tIn = clamp(ed.tIn || 0, 0, dur), tOut = Math.min(dur, ed.tOut == null ? dur : ed.tOut), speed = ed.speed || 1, D = Math.max(0.1, (tOut - tIn) / speed);
   // the resolution setting limits the cropped result; frames are rendered at the scaled full size, then cropped / rotated
   const full = outDims(ed, item.w, item.h), sc = Math.min(1, maxSide / Math.max(full.ow, full.oh));
@@ -914,8 +1067,15 @@ async function exportVideoMP4(item, prog) {
         }
       } catch (e) { audio = null; }
     }
-    const target = new Mp4Muxer.ArrayBufferTarget();
-    const mux = new Mp4Muxer.Muxer({ target, video: { codec: cfg.m, width: w, height: h, frameRate: fps }, audio: audio ? { codec: audio.k.m, numberOfChannels: audio.ch, sampleRate: 48000 } : undefined, fastStart: 'in-memory' });
+    // with a save-file handle the MP4 streams straight to disk (memory stays flat, even for long 4K clips); otherwise it is built in memory
+    let writable = null;
+    if (handle) { try { writable = await handle.createWritable(); } catch (e) { writable = null; } }
+    let wchain = Promise.resolve(), wErr = null;
+    const target = writable
+      ? new Mp4Muxer.StreamTarget({ chunked: true, chunkSize: 8 * 1024 * 1024, onData: (data, position) => { const d = data.slice(); wchain = wchain.then(() => writable.write({ type: 'write', data: d, position })).catch((e) => { wErr = e; }); } })
+      : new Mp4Muxer.ArrayBufferTarget();
+    streamW = writable;
+    const mux = new Mp4Muxer.Muxer({ target, video: { codec: cfg.m, width: w, height: h, frameRate: fps }, audio: audio ? { codec: audio.k.m, numberOfChannels: audio.ch, sampleRate: 48000 } : undefined, fastStart: writable ? false : 'in-memory' });
     let encErr = null;
     const tick = () => new Promise((r) => setTimeout(r, 0));
 
@@ -980,13 +1140,14 @@ async function exportVideoMP4(item, prog) {
     console.info('[export] ms/frame ' + JSON.stringify(Object.fromEntries(Object.entries(T).map(([k, x]) => [k, +(x / N).toFixed(1)]))) + ' codec', cfg.conf.codec, 'fps', fps, w + 'x' + h);
     if (encErr) throw encErr;
     mux.finalize();
+    if (writable) { await wchain; if (wErr) throw wErr; await writable.close(); streamW = null; return { saved: true, ext: 'mp4', mime: 'video/mp4' }; }
     return { blob: new Blob([target.buffer], { type: 'video/mp4' }), ext: 'mp4', mime: 'video/mp4' };
-  } finally { g.dispose(); v.removeAttribute('src'); v.load(); }
+  } finally { if (streamW) { try { await streamW.abort(); } catch (e) {} } g.dispose(); v.removeAttribute('src'); v.load(); }
 }
 
-async function exportVideo(item, prog) {
+async function exportVideo(item, prog, handle) {
   if (canMP4()) {
-    try { return await exportVideoMP4(item, prog); }
+    try { return await exportVideoMP4(item, prog, handle); }
     catch (e) { if (e && e.message === 'cancelled') return null; console.warn('MP4 export failed', e); toast('MP4 export unavailable here (' + (e.message || e) + '). Using compatible WebM mode.'); }
   }
   const blob = await exportVideoRealtime(item, prog);
@@ -1024,10 +1185,10 @@ $('#exGo').onclick = async (e) => {
       const want = canMP4() ? 'mp4' : 'webm';
       let handle = await pickSave(`${slug(it.name)}_colorlab.${want}`, want === 'mp4' ? 'video/mp4' : 'video/webm', want);
       it.el.pause();
-      const res = await exportVideo(it, (p, txt) => setProg($('#exProg'), p, txt || `Rendering ${Math.round(p * 100)}%`));
+      const res = await exportVideo(it, (p, txt) => setProg($('#exProg'), p, txt || `Rendering ${Math.round(p * 100)}%`), want === 'mp4' ? handle : null);
       if (!res) throw new Error('cancelled');
       if (res.ext !== want) handle = null;   // fell back to another format: use a normal download instead
-      await saveBlob(res.blob, `${slug(it.name)}_colorlab.${res.ext}`, handle);
+      if (!res.saved) await saveBlob(res.blob, `${slug(it.name)}_colorlab.${res.ext}`, handle);
       setProg($('#exProg'), 1, 'Saved ✓');
     }
     markStep('exported'); toast('Exported. Your file is saved on your device.');
@@ -1055,11 +1216,11 @@ function renderBatch() {
   const ul = $('#batchList'); ul.innerHTML = '';
   const ps = photos();
   if (!ps.length) ul.innerHTML = '<li class="muted">No photos yet. Use Import Media on the Home tab. Videos are exported one at a time.</li>';
-  ps.forEach((p) => { const li = document.createElement('li'); li.innerHTML = `<img alt="" src="${p.thumb}"><span class="n">${p.name}</span><span class="st" data-id="${p.id}">${p.edited ? 'edited' : 'unedited'}</span>`; ul.appendChild(li); });
+  ps.forEach((p) => { const li = document.createElement('li'); li.innerHTML = `<img alt="" src="${p.thumb}"><span class="n">${esc(p.name)}</span><span class="st" data-id="${p.id}">${p.edited ? 'edited' : 'unedited'}</span>`; ul.appendChild(li); });
   $('#zipAll').disabled = $('#applyAll').disabled = !ps.length;
   $('#folderAll').hidden = !window.showDirectoryPicker;
 }
-$('#applyAll').onclick = () => { const c = cur(); if (!c) return; photos().forEach((p) => { p.params = E.clone(c.params); p.edited = true; }); updateCounts(); renderBatch(); toast('Current settings applied to every photo'); };
+$('#applyAll').onclick = () => { const c = cur(); if (!c) return; photos().forEach((p) => { p.params = E.clone(c.params); p.inited = true; p.edited = true; p.hist = null; }); updateCounts(); renderBatch(); toast('Current settings applied to every photo'); };
 async function batchExport(toFolder) {
   const ps = photos(); if (!ps.length) return;
   const o = exOpts(), ext = EXT[o.type], files = [], used = new Set();
@@ -1093,7 +1254,7 @@ $('#projInput').onchange = async (e) => {
   const f = e.target.files[0]; e.target.value = ''; if (!f) return;
   try {
     const d = JSON.parse(await f.text()); if (d.app !== 'dive-colorlab') throw 0;
-    let n = 0; d.items.forEach((x) => { const m = S.items.find((i) => i.name === x.name && i.kind === x.kind); if (m) { m.params = Object.assign(E.neutralParams(), x.params); if (x.edit && x.edit.crop) { m.edit = Object.assign(defaultEdit(), x.edit); if (m.kind === 'video') applyVideoPrefs(m); } m.edited = true; n++; } });
+    let n = 0; d.items.forEach((x) => { const m = S.items.find((i) => i.name === x.name && i.kind === x.kind); if (m) { m.params = Object.assign(E.neutralParams(), E.sanitizeParams ? E.sanitizeParams(x.params) : x.params); m.inited = true; m.hist = null; if (x.edit && x.edit.crop) { m.edit = sanitizeEdit(x.edit); if (m.kind === 'video') applyVideoPrefs(m); } m.edited = true; n++; } });
     if (Array.isArray(d.presets) && d.presets.length) { const l = userPresets(); d.presets.forEach((p) => !l.some((q) => q.name === p.name) && l.push(p)); safeLS.set('dcl.presets', l); renderPresets(); }
     S.beforeKey = ''; syncUI(); updateCropMode(); requestRender(); updateCounts(); $('#dlgProj').close(); toast(n ? `Settings restored for ${n} file(s)` : 'No matching files are open. Import the same files first.');
   } catch (err) { toast('That is not a valid Dive ColorLab project file'); }
@@ -1115,6 +1276,9 @@ window.addEventListener('dragleave', (e) => { if (!hasFiles(e)) return; dragDept
 window.addEventListener('drop', (e) => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth = 0; $('#dropveil').hidden = true; setView('home'); addFiles(e.dataTransfer.files); });
 // open files handed over by the OS (installed PWA / file handlers), when supported
 if ('launchQueue' in window) window.launchQueue.setConsumer(async (p) => { const fs = []; for (const h of p.files || []) fs.push(await h.getFile()); addFiles(fs); });
+
+// offline use: cache the app files (not your media) once the page has loaded over http(s)
+if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
 
 /* ---------------- boot ---------------- */
 buildControls(); buildWheels(); buildHSL(); buildEditUI(); buildQuick(); renderPresets(); updateCounts(); updateSteps();

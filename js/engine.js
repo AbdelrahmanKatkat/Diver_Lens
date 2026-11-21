@@ -39,6 +39,34 @@ const Engine = (() => {
 
   const clone = (o) => JSON.parse(JSON.stringify(o));
 
+  /* Keep only known fields of a (possibly hand-edited) project file, with sane types and ranges */
+  function sanitizeParams(src) {
+    const base = neutralParams(), out = {};
+    if (!src || typeof src !== 'object') return out;
+    const num = (v, lo, hi) => (typeof v === 'number' && isFinite(v) ? Math.min(hi, Math.max(lo, v)) : undefined);
+    for (const k in base) {
+      const b = base[k], v = src[k];
+      if (typeof b === 'number') { const n = num(v, -1000, 1000); if (n !== undefined) out[k] = n; }
+      else if (typeof b === 'boolean') { if (typeof v === 'boolean') out[k] = v; }
+    }
+    if (src.curves && typeof src.curves === 'object') {
+      out.curves = clone(base.curves);
+      for (const ch of ['rgb', 'r', 'g', 'b']) {
+        const pts = src.curves[ch];
+        if (Array.isArray(pts) && pts.length >= 2 && pts.length <= 32 && pts.every((p) => Array.isArray(p) && num(p[0], 0, 1) !== undefined && num(p[1], 0, 1) !== undefined)) out.curves[ch] = pts.map((p) => [p[0], p[1]]);
+      }
+    }
+    if (src.wheels && typeof src.wheels === 'object') {
+      out.wheels = clone(base.wheels);
+      for (const k in base.wheels) { const w = src.wheels[k]; if (w && typeof w === 'object') for (const f of ['x', 'y', 'l']) if (typeof w[f] === 'number' && isFinite(w[f])) out.wheels[k][f] = Math.min(100, Math.max(-100, w[f])); }
+    }
+    if (src.hsl && typeof src.hsl === 'object') {
+      out.hsl = clone(base.hsl);
+      for (const k in base.hsl) { const h = src.hsl[k]; if (h && typeof h === 'object') for (const f of ['h', 's', 'l']) if (typeof h[f] === 'number' && isFinite(h[f])) out.hsl[k][f] = Math.min(100, Math.max(-100, h[f])); }
+    }
+    return out;
+  }
+
   /* ---------- curves (monotone cubic) ---------- */
   function curveLUT(pts) {
     const P = pts.slice().sort((a, b) => a[0] - b[0]);
@@ -122,6 +150,11 @@ const Engine = (() => {
       r: Math.max(r / n / 255, 0.004), g: Math.max(g / n / 255, 0.004), b: Math.max(b / n / 255, 0.004),
       minMean: mn / n / 255, hist, p1: cut(0.01), p99: cut(0.99), p50: cut(0.5), A: null, trans: null, tw: w, th: h,
     };
+    {   // tiny copy (about 112 px) that Auto scores its candidate looks on
+      const sc = Math.min(1, 112 / Math.max(w, h)), sw = Math.max(2, Math.round(w * sc)), sh = Math.max(2, Math.round(h * sc)), sd = new Uint8ClampedArray(sw * sh * 4);
+      for (let y = 0; y < sh; y++) for (let x = 0; x < sw; x++) { const s = ((Math.min(h - 1, Math.floor((y + 0.5) / sc))) * w + Math.min(w - 1, Math.floor((x + 0.5) / sc))) * 4, d = (y * sw + x) * 4; sd[d] = data[s]; sd[d + 1] = data[s + 1]; sd[d + 2] = data[s + 2]; sd[d + 3] = 255; }
+      st.small = { data: sd, w: sw, h: sh };
+    }
     if (opts.video) st.ref = { data, w, h };   // video: levels are measured once on this reference frame (no flicker)
     if (opts.video || n < 64) return st;
 
@@ -353,14 +386,75 @@ const Engine = (() => {
   }
 
   /* ---------- auto routine ---------- */
-  function autoParams(st) {
+  /* Scene-adaptive Auto.
+     1 read the scene: how much red is lost, blue or green water, haze, contrast, brightness, and a confidence that it is an underwater shot at all
+     2 build a base recipe from those numbers (continuous, not fixed)
+     3 try a few variations on a small copy of the picture and keep the one with the most natural colour balance, no clipping and no orange skin
+     `amt` (0..1.5) scales the whole look, so one slider moves between "off" and "stronger". */
+  function sceneOf(st) {
+    const g = Math.max(st.g, 0.02), redLoss = clamp(1 - st.r / g, 0, 1), blueExcess = clamp((st.b - g) / g, 0, 1), greenExcess = clamp((g - st.b) / g, 0, 1);
+    const conf = clamp((Math.max(st.g, st.b) - st.r) / Math.max(st.g, st.b, 0.02) / 0.3, 0, 1);   // 0: colours already balanced / not underwater
+    return { redLoss, blueExcess, greenExcess, conf, haze: st.minMean, spread: st.p99 - st.p1, dark: st.p50 < 0.2 };
+  }
+  function baseRecipe(st, sc) {
+    const k = 0.35 + 0.65 * sc.conf;   // weak evidence of water cast -> gentle recipe
     return {
-      cast: true, castAmt: 100, levels: 75,
-      dehaze: true, dehazeAmt: Math.round(clamp(st.minMean * 180, 22, 55)),
-      backscatter: true, backAmt: 25,
+      cast: sc.conf > 0.05, castAmt: Math.round(clamp((60 + 55 * sc.redLoss) * k, 0, 110)),
+      levels: Math.round((sc.redLoss > 0.7 ? 70 : 78) * k),
+      dehaze: true, dehazeAmt: Math.round(clamp(st.minMean * 180, 22, 55) * (0.4 + 0.6 * sc.conf) * (sc.spread > 0.85 ? 0.6 : 1)),
+      backscatter: true, backAmt: Math.round(25 * k),
       exposure: +clamp(Math.log2(0.4 / Math.max(st.p50, 0.05)) * 0.5, -0.4, 0.8).toFixed(2),
-      contrast: 6, clarity: 18, vibrance: 18, saturation: 0, shadows: 8, highlights: -6, temp: 0, tint: 0,
+      contrast: 6, clarity: sc.dark ? 8 : Math.round(14 + 12 * clamp(sc.haze / 0.35, 0, 1)),
+      vibrance: Math.round(12 + 10 * sc.redLoss), saturation: 0, shadows: 8, highlights: -6,
+      temp: Math.round(10 * sc.blueExcess * k), tint: -Math.round(10 * sc.greenExcess * k),
+      noise: sc.dark && sc.redLoss > 0.4, noiseAmt: 25,
     };
+  }
+  // 0 = good, higher = worse. Natural underwater look: red recovered but not orange, no clipping, healthy spread.
+  function scoreLook(o, n) {
+    let R = 0, G = 0, B = 0, clip = 0, orange = 0; const hist = new Uint32Array(256);
+    for (let i = 0; i < n * 4; i += 4) {
+      const r = o[i], g = o[i + 1], b = o[i + 2]; R += r; G += g; B += b;
+      if (r < 3 || g < 3 || b < 3 || r > 252 || g > 252 || b > 252) clip++;
+      if (r > 200 && g < r * 0.62 && b < g) orange++;
+      hist[(0.2126 * r + 0.7152 * g + 0.0722 * b) | 0]++;
+    }
+    R = R / n + 1; G = G / n + 1; B = B / n + 1;
+    const cut = (q) => { let a = 0; for (let i = 0; i < 256; i++) { a += hist[i]; if (a >= n * q) return i / 255; } return 1; };
+    const spread = cut(0.99) - cut(0.01);
+    return Math.abs(Math.log(R / G / 0.9)) + 0.7 * Math.abs(Math.log(B / G / 1.05)) + 4 * clip / n + 6 * orange / n + 0.6 * Math.abs(spread - 0.85);
+  }
+  const lerpNum = (a, b, t) => a + (b - a) * t;
+  function scaleRecipe(r, amt) {
+    const o = Object.assign({}, r), A = clamp(amt, 0, 1.5);
+    for (const k of ['castAmt', 'levels', 'dehazeAmt', 'backAmt', 'noiseAmt', 'exposure', 'contrast', 'clarity', 'vibrance', 'shadows', 'highlights', 'temp', 'tint']) {
+      if (typeof o[k] === 'number') o[k] = k === 'exposure' ? +(o[k] * A).toFixed(2) : Math.round(k.endsWith('Amt') || k === 'levels' ? clamp(o[k] * A, 0, 100) : o[k] * A);
+    }
+    return o;
+  }
+  function autoParams(st, amt) {
+    amt = amt == null ? 1 : amt;
+    if (!st._auto) st._auto = autoBest(st);   // the search runs once per picture; the Amount slider only rescales it
+    return scaleRecipe(st._auto, amt);
+  }
+  function autoBest(st) {
+    const sc = sceneOf(st), base = baseRecipe(st, sc);
+    let best = base;
+    const sm = st.small;
+    if (sm && sc.conf > 0.05) {
+      const s2 = Object.assign({}, st); s2._lvKey = null;   // keep the real statistics' cache untouched
+      const out = new Uint8ClampedArray(sm.data.length), n = sm.w * sm.h;
+      let bs = Infinity;
+      for (const cs of [0.55, 0.8, 1, 1.2]) for (const ls of [0.8, 1, 1.15]) {
+        const cand = Object.assign({}, base, { castAmt: Math.round(clamp(base.castAmt * cs, 0, 120)), levels: Math.round(base.levels * ls) });
+        const p = Object.assign(neutralParams(), cand);
+        s2._lvKey = null; process(sm.data, out, sm.w, sm.h, p, s2);
+        // mild preference for the base recipe so ties never wander off
+        const sco = scoreLook(out, n) + (cs === 1 && ls === 1 ? 0 : 0.03);
+        if (sco < bs) { bs = sco; best = cand; }
+      }
+    }
+    return best;
   }
 
   /* ---------- store-only ZIP writer ---------- */
@@ -390,5 +484,5 @@ const Engine = (() => {
     return new Blob([...parts, ...central, end.buffer], { type: 'application/zip' });
   }
 
-  return { BANDS, neutralParams, defaultParams, clone, curveLUT, curveTables, wheelVectors, activeBands, computeStats, makeCore, getLevels, process, autoParams, makeZip, clamp };
+  return { BANDS, neutralParams, defaultParams, clone, sanitizeParams, curveLUT, curveTables, wheelVectors, activeBands, computeStats, makeCore, getLevels, process, autoParams, sceneOf, makeZip, clamp };
 })();

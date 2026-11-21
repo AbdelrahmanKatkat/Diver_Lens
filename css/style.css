@@ -257,3 +257,20 @@ body.focus .stage{height:clamp(360px,60vh,720px)}
 .btn.sm{padding:8px 10px;font-size:13px;gap:6px}
 .btn.sm .i{width:16px;height:16px}
 .lbl{display:block;color:var(--muted);margin:10px 0 6px;font-size:12px}
+
+/* ---- auto card, histogram, eyedropper, undo, pro tools ---- */
+.hist{width:100%;height:64px;display:block;margin-top:6px;border-radius:8px;background:var(--field);border:1px solid var(--border)}
+.hbtns{display:inline-flex;gap:6px;float:right}
+.auto.on{outline:2px solid var(--accent)}
+.cmp.picking,.cmp.picking *{cursor:crosshair!important}
+.actions{grid-template-columns:repeat(4,1fr)}
+.actions .primary{grid-column:1/-1}
+.actions .btn{white-space:nowrap;padding:9px 6px;font-size:13px}
+.actions .btn:disabled{opacity:.45;cursor:default}
+.probar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 10px;padding:8px 12px;border-radius:12px;background:var(--panel);border:1.5px solid var(--border);font-size:13px;color:var(--muted)}
+.keys{margin:6px 0 10px;padding-left:18px;font-size:13px;color:var(--muted)}
+.keys kbd{background:var(--field);border:1px solid var(--border);border-radius:5px;padding:0 5px;font-family:inherit;font-size:12px;color:var(--text)}
+.sl.off label{opacity:.55}
+button:focus-visible,.pr:focus-visible,[role=button]:focus-visible,.th:focus-visible,.dot:focus-visible,.tab:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+@media (max-width:820px){.btn,.tab,.seg button{min-height:44px}}
+.hbtns .auto{white-space:nowrap}

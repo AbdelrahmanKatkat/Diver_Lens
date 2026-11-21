@@ -157,6 +157,9 @@ void main(){
       this.canvas = document.createElement('canvas'); this.canvas.width = this.canvas.height = 16;
       const gl = (this.gl = this.canvas.getContext('webgl2', { preserveDrawingBuffer: true, antialias: false, alpha: false, depth: false, stencil: false, powerPreference: 'high-performance' }));
       this.ok = !!gl; if (!gl) return;
+      this.lost = false;
+      // a lost context turns GL calls into silent no-ops; flag it so callers fall back instead of showing black
+      this.canvas.addEventListener('webglcontextlost', (e) => { e.preventDefault(); this.lost = true; });
       this.maxSize = Math.min(gl.getParameter(gl.MAX_TEXTURE_SIZE), 8192);
       this.floatRT = !!gl.getExtension('EXT_color_buffer_float');
       this.progs = { main: this.mk(FS_MAIN), down: this.mk(FS_DOWN), blur: this.mk(FS_BLUR), fin: this.mk(FS_FINAL) };
@@ -223,6 +226,7 @@ void main(){
 
     /* params p, stats st, levels lv = Engine.getLevels(...) */
     render(p, st, lv) {
+      if (this.lost || this.gl.isContextLost()) { this.lost = true; throw new Error('webgl context lost'); }
       const gl = this.gl, w = this.w, h = this.h, P = this.progs.main, U = (n) => this.u(P, n);
       const core = Engine.makeCore(p, st, w, h), cv = Engine.curveTables(p), wh = Engine.wheelVectors(p), bands = Engine.activeBands(p);
       this.setTrans(st);

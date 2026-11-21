@@ -1,0 +1,11 @@
+{
+  "name": "Dive ColorLab",
+  "short_name": "ColorLab",
+  "description": "Colour-correct underwater photos and videos on your own device.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#04122a",
+  "theme_color": "#04122a",
+  "icons": [{ "src": "assets/logo.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}

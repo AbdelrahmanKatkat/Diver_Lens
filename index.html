@@ -6,13 +6,10 @@
 <title>Dive ColorLab</title>
 <meta name="description" content="Enhance, colour-correct and restore underwater photos and videos. Everything runs locally in your browser: open files from your disk, fix them, export them back.">
 <link rel="icon" href="assets/logo.svg" type="image/svg+xml">
-<script>
-  try {
-    var t = localStorage.getItem('dcl.theme');
-    if (!t) t = window.matchMedia && matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
-    document.documentElement.setAttribute('data-theme', t);
-  } catch (e) {}
-</script>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#04122a">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self' blob:; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'none'">
+<script src="js/theme.js"></script>
 <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
@@ -129,8 +126,15 @@
     </div>
     <div class="rbody glass neon" id="rbody">
       <div id="rt-cc">
+        <section class="rsec" id="autoCard">
+          <h3 class="rh">Auto Enhance</h3>
+          <button class="btn primary wide" id="autoBtn"><svg class="i" data-i="wand"></svg> Auto Enhance</button>
+          <div id="sl-auto"></div>
+          <p class="hint" id="autoNote"></p>
+          <canvas id="histCv" class="hist" width="256" height="64" role="img" aria-label="Colour histogram of the corrected picture"></canvas>
+        </section>
         <section class="rsec">
-          <h3 class="rh">White Balance (Underwater) <button class="auto" id="autoWB"><svg class="i" data-i="wand"></svg> Auto</button></h3>
+          <h3 class="rh">White Balance (Underwater) <span class="hbtns"><button class="auto" id="pickWB" title="Click a grey or white area of the picture (W)"><svg class="i" data-i="pipette"></svg> Pick grey</button> <button class="auto" id="autoWB"><svg class="i" data-i="wand"></svg> Auto</button></span></h3>
           <div id="sl-wb"></div>
         </section>
         <section class="rsec">
@@ -144,7 +148,7 @@
       </div>
       <div id="rt-adv" hidden>
         <section class="rsec"><h3 class="rh">Strength &amp; Detail</h3><div id="sl-adv"></div></section>
-        <p class="hint">Underwater tools must be switched on (Color Correction tab) for their strength to apply.</p>
+        <p class="hint">Moving a strength slider switches its tool on automatically. You can switch tools off again under Underwater Tools in the Color tab.</p>
       </div>
       <div id="rt-pre" hidden>
         <div class="preset-grid" id="presetGrid"></div>
@@ -182,6 +186,8 @@
       </div>
     </div>
     <div class="actions">
+      <button class="btn" id="undoBtn" title="Undo (Ctrl+Z)" aria-label="Undo" disabled>&#8630; Undo</button>
+      <button class="btn" id="redoBtn" title="Redo (Ctrl+Y)" aria-label="Redo" disabled>Redo &#8631;</button>
       <button class="btn" id="resetBtn"><svg class="i" data-i="reset"></svg> Reset</button>
       <button class="btn" id="compareBtn"><svg class="i" data-i="compare"></svg> Compare</button>
       <button class="btn primary" id="exportBtn"><svg class="i" data-i="export"></svg> Export</button>
@@ -252,6 +258,19 @@
     <h2>About Dive ColorLab</h2>
     <p>A static, privacy-friendly underwater colour lab. Open photos and videos from your computer, correct them, and export the result. Nothing leaves your device.</p>
     <p class="muted">Supported: JPG, PNG, WebP, AVIF, GIF (first frame) and browser-playable video (MP4, WebM, MOV on some browsers). RAW and HEIC are not decodable by browsers.</p>
+    <h3>Keyboard shortcuts</h3>
+    <ul class="keys">
+      <li><kbd>Ctrl</kbd>+<kbd>Z</kbd> undo &nbsp; <kbd>Ctrl</kbd>+<kbd>Y</kbd> redo</li>
+      <li>Hold <kbd>\</kbd> to see the original</li>
+      <li><kbd>W</kbd> pick a grey / white point &nbsp; <kbd>Esc</kbd> cancel</li>
+      <li><kbd>Space</kbd> play / pause video</li>
+    </ul>
+    <h3>Tips for better results</h3>
+    <ul class="keys">
+      <li>Set a custom white balance on the camera, or shoot RAW, when you can.</li>
+      <li>Red is almost gone below about 15 m. Auto can only recover what the camera still recorded.</li>
+      <li>Everything runs on this device; your files are never uploaded.</li>
+    </ul>
     <h3>Sample photo credits (Wikimedia Commons)</h3>
     <ul class="credits" id="credits"></ul>
     <div class="row end"><button class="btn primary" value="ok">Close</button></div>
