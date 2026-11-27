@@ -11,7 +11,7 @@ uniform sampler2D uSrc; uniform sampler2D uTrans; uniform sampler2D uCurve; unif
 uniform int uHasRG; uniform float uRRw, uRGg;
 uniform vec2 uTexel; uniform float uDenoise;
 uniform int uSkin, uHasTrans, uCurves, uWOn, uNB, uDepthOn;
-uniform float uKR, uKB, uDz, uA1min, uL, uBk, uCt, uHi, uSh, uVib, uSat, uEx;
+uniform float uTmin, uKR, uKB, uDz, uA1min, uL, uBk, uCt, uHi, uSh, uVib, uSat, uEx;
 uniform vec3 uGain, uA1, uLo, uSc, uW0, uW1, uW2, uK;
 uniform vec4 uBand[9];
 in vec2 vUv; out vec4 o;
@@ -58,7 +58,7 @@ void main(){
     c = (c - uA1) / tt + uA1;
   } else if (uDz > 0.0) {
     float t = uHasTrans != 0 ? texture(uTrans, vec2(vUv.x, 1.0 - vUv.y)).r : 1.0 - 0.95 * min(1.0, min(c.g, c.b) / uA1min);
-    t = 1.0 - uDz * (1.0 - m0 * 0.95) * (1.0 - t); t = max(t, 0.3);
+    t = 1.0 - uDz * (1.0 - m0 * 0.95) * (1.0 - t); t = max(t, uTmin);
     c = (c - uA1) / t + uA1;
   }
   if (uL > 0.0) {
@@ -272,6 +272,7 @@ void main(){
       gl.uniform3f(U('uGain'), core.gain[0], core.gain[1], core.gain[2]);
       gl.uniform1f(U('uDz'), core.dz); gl.uniform3f(U('uA1'), core.A1[0], core.A1[1], core.A1[2]); gl.uniform1f(U('uA1min'), core.A1min);
       gl.uniform1i(U('uHasTrans'), this.hasTrans ? 1 : 0);
+      gl.uniform1f(U('uTmin'), core.tmin);
       gl.uniform1f(U('uRRw'), core.rrw); gl.uniform1f(U('uRGg'), core.rgGlobal); gl.uniform1i(U('uHasRG'), st.rg ? 1 : 0);
       gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, this.texRG); gl.uniform1i(U('uRG'), 6);
       gl.uniform1i(U('uDepthOn'), core.dd ? 1 : 0); gl.uniform3f(U('uK'), core.Kd[0], core.Kd[1], core.Kd[2]);

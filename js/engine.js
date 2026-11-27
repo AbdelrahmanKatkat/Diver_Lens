@@ -156,8 +156,19 @@ const Engine = (() => {
       for (let y = 0; y < sh; y++) for (let x = 0; x < sw; x++) { const s = ((Math.min(h - 1, Math.floor((y + 0.5) / sc))) * w + Math.min(w - 1, Math.floor((x + 0.5) / sc))) * 4, d = (y * sw + x) * 4; sd[d] = data[s]; sd[d + 1] = data[s + 1]; sd[d + 2] = data[s + 2]; sd[d + 3] = 255; }
       st.small = { data: sd, w: sw, h: sh };
     }
-    if (opts.video) st.ref = { data, w, h };   // video: levels are measured once on this reference frame (no flicker)
-    if (opts.video || n < 64) return st;
+    if (opts.video) st.ref = { data, w, h };   // video: levels are measured once on this reference (no flicker)
+    if (n < 64) return st;
+    if (opts.video) {   // veil colour from the brightest dark-channel pixels of the reference; no per-pixel transmission map for video
+      const gbv = new Float32Array(n);
+      for (let i = 0, j = 0; i < n; i++, j += 4) gbv[i] = Math.min(data[j + 1], data[j + 2]) / 255;
+      const darkv = minFilter(gbv, w, h, Math.max(2, Math.round(Math.max(w, h) / 200))), dhv = new Uint32Array(256);
+      for (let i = 0; i < n; i++) dhv[Math.min(255, (darkv[i] * 255) | 0)]++;
+      let accv = 0, thv = 255; for (let v = 255; v >= 0; v--) { accv += dhv[v]; if (accv >= n * 0.005) { thv = v; break; } }
+      let r2 = 0, g2 = 0, b2 = 0, c2 = 0;
+      for (let i = 0, j = 0; i < n; i++, j += 4) if (darkv[i] * 255 >= thv) { r2 += data[j]; g2 += data[j + 1]; b2 += data[j + 2]; c2++; }
+      if (c2) st.A = [clamp(r2 / c2 / 255, 0.12, 1), clamp(g2 / c2 / 255, 0.2, 1), clamp(b2 / c2 / 255, 0.2, 1)];
+      return st;
+    }
     {   // smooth local red/green ratio: the colour that red recovery rebuilds red from (fine detail comes from green, so red noise is not amplified)
       const rgm = new Float32Array(n);
       for (let i = 0, j = 0; i < n; i++, j += 4) rgm[i] = Math.min(2, data[j] / (data[j + 1] + 3));
@@ -245,6 +256,7 @@ const Engine = (() => {
       const rg = st.rg ? st.rg[((y * sy) | 0) * tw + ((x * sx) | 0)] : rgGlobal, need = Math.max(0, 0.85 - rg), T = rg + rrw * 0.9 * need, w = rrw * clamp(need / 0.5, 0, 1);
       return r + w * (g * T - r);
     };
+    const tmin = st.ref ? 0.5 : 0.3;   // video: at most 2x boost, bright shafts no longer clip to white
     const Araw = st.A || [0.3, 0.55, 0.75];
     stage1(Araw[0], Araw[1], Araw[2]);
     const A1r = C.r, A1g = C.g, A1b = C.b, A1min = Math.max(0.05, Math.min(A1g, A1b));
@@ -256,7 +268,7 @@ const Engine = (() => {
         return;
       }
       let t = tr ? tr[((y * sy) | 0) * tw + ((x * sx) | 0)] : 1 - 0.95 * Math.min(1, Math.min(C.g, C.b) / A1min);
-      t = 1 - dz * (1 - prot * 0.95) * (1 - t); if (t < 0.3) t = 0.3;
+      t = 1 - dz * (1 - prot * 0.95) * (1 - t); if (t < tmin) t = tmin;
       C.r = (C.r - A1r) / t + A1r; C.g = (C.g - A1g) / t + A1g; C.b = (C.b - A1b) / t + A1b;
     };
     // soft mask for skin-like hues (orange, g/r about 0.45-0.9, blue below green)
@@ -265,7 +277,7 @@ const Engine = (() => {
       const gr2 = g / r;
       return clamp(Math.min((gr2 - 0.3) / 0.15, (0.95 - gr2) / 0.1), 0, 1);
     };
-    return { skin, kR, kB, ex, gain: [gr, gg, gb], dz, A1: [A1r, A1g, A1b], A1min, hasTrans: !!tr, dd, Kd, rrw, rgGlobal, red, stage1, dehaze, skinMask, C };
+    return { skin, kR, kB, ex, gain: [gr, gg, gb], dz, A1: [A1r, A1g, A1b], A1min, hasTrans: !!tr, tmin, dd, Kd, rrw, rgGlobal, red, stage1, dehaze, skinMask, C };
   }
 
   /* Per-channel percentile stretch. Measured once per clip/image and cached, so video does not flicker. */

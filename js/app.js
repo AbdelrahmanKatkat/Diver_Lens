@@ -183,17 +183,24 @@ async function loadVideoItem(src, name) {
   document.body.appendChild(v);
   try { await once(v, 'loadeddata'); } catch (e) { v.remove(); throw e; }   // do not leave a dead element behind
   const item = { id: S.uid++, kind: 'video', name, url: src, el: v, w: v.videoWidth, h: v.videoHeight, duration: v.duration, params: E.defaultParams(), edit: defaultEdit(), edited: false };
-  // thumbnail + statistics from a representative frame
-  v.currentTime = Math.min(1, (v.duration || 1) * 0.1);
+  // thumbnail from an early frame; colour statistics from frames spread over the whole clip (tiled into one reference), so a clip that
+  // goes from dark water to a bright shaft or reef is corrected for the whole clip, not for one early frame
+  const D0 = isFinite(v.duration) && v.duration > 0 ? v.duration : 1;
+  v.currentTime = Math.min(1, D0 * 0.1);
   await once(v, 'seeked');
-  const sc = Math.min(1, WORK_VID / Math.max(item.w, item.h)), w = Math.round(item.w * sc), h = Math.round(item.h * sc);
-  const c = document.createElement('canvas'); c.width = w; c.height = h;
-  const x = c.getContext('2d', { willReadFrequently: true });
-  x.drawImage(v, 0, 0, w, h);
-  item.st = E.computeStats(x.getImageData(0, 0, w, h).data, w, h, { video: true });
   const t = document.createElement('canvas'); t.width = 240; t.height = Math.round(240 * item.h / item.w);
   t.getContext('2d').drawImage(v, 0, 0, t.width, t.height);
   item.thumb = t.toDataURL('image/jpeg', 0.7);
+  const NREF = D0 < 1.5 ? 1 : 6, cols = Math.min(3, NREF), rows = Math.ceil(NREF / cols);
+  const tile = Math.max(2, Math.round(Math.min(item.w, WORK_VID) / cols)), tileH = Math.max(2, Math.round(tile * item.h / item.w));
+  const mc = document.createElement('canvas'); mc.width = tile * cols; mc.height = tileH * rows;
+  const mx = mc.getContext('2d', { willReadFrequently: true });
+  for (let i = 0; i < NREF; i++) {
+    const ti = NREF === 1 ? Math.min(1, D0 * 0.1) : Math.min(D0 - 0.05, D0 * (0.03 + 0.94 * i / (NREF - 1)));
+    try { if (Math.abs(v.currentTime - ti) > 0.02) { v.currentTime = ti; await once(v, 'seeked'); } } catch (e) { /* keep what we have */ }
+    mx.drawImage(v, (i % cols) * tile, Math.floor(i / cols) * tileH, tile, tileH);
+  }
+  item.st = E.computeStats(mx.getImageData(0, 0, mc.width, mc.height).data, mc.width, mc.height, { video: true });
   v.currentTime = 0;
   v.addEventListener('durationchange', () => { if (isFinite(v.duration) && v.duration > 0) { item.duration = v.duration; if (cur() === item) { updateTime(); if (refs.e_tIn) { refs.e_tIn(); refs.e_tOut(); } } } });
   v.addEventListener('timeupdate', () => { if (cur() === item) { if (!v.paused && v.currentTime >= trimOf(item).b) v.pause(); updateTime(); } });
